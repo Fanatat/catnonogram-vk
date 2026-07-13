@@ -1,0 +1,571 @@
+:root {
+  --bg:        #f3ead6;
+  --ink:       #2b2723;
+  --ink-light: #7a6f65;
+  --accent:    #4a7c59;
+  --radius:    6px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  width: 100%; height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+#app {
+  width: 100%; height: 100%;
+  touch-action: none;
+  position: relative;
+  /* ПК-модерация (п.1.6.2.7): не даём браузеру выделять текст игровых
+     экранов ПКМ-протяжкой/тройным кликом — это отдельная защита от
+     дефолтного контекстного меню (contextmenu гасится в main.js). */
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+}
+
+.screen {
+  position: absolute; inset: 0;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.screen.is-active { display: flex; }
+
+/* Загрузка */
+.loader {
+  width: 40px; height: 40px;
+  border: 3px solid var(--ink-light);
+  border-top-color: var(--ink);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-text { margin-top: 16px; color: var(--ink-light); font-size: 0.9rem; }
+
+/* Меню */
+.menu-head { text-align: center; margin-bottom: 48px; }
+.game-title { font-size: 2.6rem; font-weight: normal; margin: 8px 0 6px; }
+.game-sub { color: var(--ink-light); font-size: 0.95rem; }
+
+.menu-actions { display: flex; flex-direction: column; gap: 12px; width: 200px; }
+
+.btn {
+  padding: 14px 24px;
+  border: 2px solid var(--ink);
+  border-radius: var(--radius);
+  font-family: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+  background: transparent;
+  color: var(--ink);
+  transition: background 0.15s, color 0.15s;
+}
+.btn-primary { background: var(--ink); color: var(--bg); }
+.btn-primary:active { opacity: 0.8; }
+.btn-secondary:active { background: var(--ink); color: var(--bg); }
+#btn-daily.is-done { opacity: 0.5; }
+
+/* Стрик + кнопка календаря */
+.daily-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  margin-top: 4px;
+}
+.daily-streak {
+  font-size: 0.85rem;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+.cal-icon-btn {
+  font-size: 1rem;
+  color: var(--ink-light);
+  padding: 2px 6px;
+}
+
+/* Кнопка звука */
+#btn-sound-menu {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+#btn-sound-game {
+  margin-left: auto;   /* прижимает кнопку к правому краю шапки */
+}
+.sound-btn {
+  position: relative;
+  font-size: 1.3rem;
+}
+.sound-btn.is-muted::after {
+  content: '';
+  position: absolute;
+  inset: 4px 8px;     /* совпадает с padding icon-btn, черта идёт сквозь символ */
+  background: linear-gradient(
+    to bottom right,
+    transparent calc(50% - 1px),
+    var(--ink)        calc(50% - 1px),
+    var(--ink)        calc(50% + 1px),
+    transparent       calc(50% + 1px)
+  );
+  pointer-events: none;
+}
+
+/* Dev-бейдж */
+.dev-badge {
+  position: absolute; bottom: 16px;
+  font-size: 0.75rem;
+  color: var(--ink-light);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loader { animation: none; }
+}
+
+/* ---- Экран выбора сложности ---- */
+
+.cat-back-btn {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+}
+
+.cat-screen-title {
+  font-size: 1.4rem;
+  font-weight: normal;
+  margin-bottom: 28px;
+  color: var(--ink);
+}
+
+.category-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 260px;
+}
+
+.cat-card {
+  width: 100%;
+  padding: 16px 20px;
+  border: 2px solid var(--ink);
+  border-radius: var(--radius);
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: background 0.12s, color 0.12s;
+}
+.cat-card:active { background: var(--ink); }
+
+.cat-name {
+  font-size: 1rem;
+  color: var(--ink);
+  pointer-events: none;
+}
+.cat-card:active .cat-name { color: var(--bg); }
+
+.cat-progress {
+  font-size: 0.8rem;
+  color: var(--ink-light);
+  pointer-events: none;
+}
+.cat-card:active .cat-progress { color: var(--bg); }
+.cat-progress.is-done { color: var(--accent); }
+
+.cat-howto-btn {
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: var(--ink-light);
+  text-decoration: underline;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+/* ---- Экран игры ---- */
+
+#game {
+  align-items: stretch;
+  justify-content: flex-start;
+}
+
+.game-head {
+  display: flex;
+  align-items: center;
+  height: 52px;
+  padding: 0 12px;
+  gap: 10px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--ink-light);
+}
+.icon-btn {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  color: var(--ink);
+  cursor: pointer;
+  padding: 4px 8px;
+  line-height: 1;
+}
+.level-label { font-size: 0.9rem; color: var(--ink-light); }
+
+.puzzle-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  overflow: hidden;
+}
+
+/* ---- Головоломка (CSS Grid 2×2) ---- */
+
+.puzzle {
+  display: grid;
+  grid-template-areas: "tl   cols"
+                       "rows grid";
+  grid-template-columns: var(--clue-col-w) auto;
+  grid-template-rows: auto auto;
+  touch-action: none;
+}
+
+.puzzle-tl       { grid-area: tl; }
+.puzzle-col-clues { grid-area: cols; display: flex; }
+.puzzle-row-clues { grid-area: rows; display: flex; flex-direction: column; }
+.puzzle-grid     { grid-area: grid; }
+
+/* Подсказки столбцов: числа выровнены по нижнему краю */
+.col-clue {
+  width: var(--cell);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  padding-bottom: 6px;
+}
+.col-clue span {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+/* Подсказки строк: числа выровнены по правому краю */
+.row-clue {
+  height: var(--cell);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  padding-right: 6px;
+}
+.row-clue span {
+  font-size: 13px;
+  color: var(--ink);
+}
+
+/* Сетка */
+.puzzle-grid {
+  display: flex;
+  flex-direction: column;
+  border-top: 1.5px solid var(--ink);
+  border-left: 1.5px solid var(--ink);
+  touch-action: none;
+}
+.grid-row { display: flex; }
+.grid-cell {
+  width: var(--cell);
+  height: var(--cell);
+  border-right: 1.5px solid var(--ink);
+  border-bottom: 1.5px solid var(--ink);
+  background: var(--bg);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  cursor: pointer;
+}
+
+/* Состояния клетки */
+.grid-cell.is-filled {
+  background: var(--ink);
+}
+.grid-cell.is-cross::after {
+  content: '×';
+  font-size: calc(var(--cell) * 0.48);
+  color: var(--ink-light);
+  line-height: 1;
+  pointer-events: none;
+}
+
+/* ---- Подсказка на первом уровне ---- */
+
+.level-hint {
+  text-align: center;
+  font-size: 0.82rem;
+  color: var(--ink-light);
+  padding: 0 16px 6px;
+  flex-shrink: 0;
+  animation: fade-in 0.6s ease both;
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .level-hint { animation: none; }
+}
+
+/* ---- Онбординг ---- */
+
+.onboarding-card {
+  background: var(--bg);
+  border: 2px solid var(--ink);
+  border-radius: var(--radius);
+  padding: 28px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  max-width: 88vw;
+  animation: card-pop 0.20s ease-out both;
+}
+.onboarding-title {
+  font-size: 1.1rem;
+  font-weight: normal;
+  color: var(--ink);
+}
+.onboarding-text {
+  font-size: 0.88rem;
+  color: var(--ink-light);
+  text-align: center;
+  line-height: 1.5;
+  max-width: 260px;
+}
+
+/* ---- Подтверждение (очистка поля и т.п.) ---- */
+.confirm-actions {
+  display: flex;
+  gap: 12px;
+}
+
+/* Наглядный пример «3 1» */
+.how-example {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0;
+}
+.how-clue {
+  font-size: 1rem;
+  color: var(--ink);
+  min-width: 28px;
+  text-align: right;
+}
+.how-cells {
+  display: flex;
+  gap: 3px;
+}
+.how-cell {
+  width: 30px;
+  height: 30px;
+  border: 1.5px solid var(--ink);
+  border-radius: 2px;
+  background: var(--bg);
+}
+.how-cell.filled {
+  background: var(--ink);
+}
+
+/* ---- Победный оверлей ---- */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(43, 39, 35, 0.65);
+  z-index: 10;
+}
+.overlay[hidden] { display: none; }
+
+.win-card {
+  position: relative;
+  z-index: 2;
+  background: var(--bg);
+  border: 2px solid var(--ink);
+  border-radius: var(--radius);
+  padding: 28px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  max-width: 88vw;
+  animation: card-pop 0.20s ease-out both;
+}
+@keyframes card-pop {
+  from { transform: scale(0.85); opacity: 0; }
+  70%  { transform: scale(1.03); opacity: 1; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+
+.silhouette-mount {
+  background: var(--bg);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius);
+  padding: 14px;
+  box-shadow: 3px 3px 0 rgba(43, 39, 35, 0.18);
+  line-height: 0;           /* убирает щель под canvas (inline gap) */
+}
+.win-canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  display: block;           /* border теперь на mount, не на canvas */
+}
+.win-theme {
+  font-size: 1.15rem;
+  color: var(--ink-light);
+  letter-spacing: 0.06em;
+}
+
+/* Конфетти */
+.confetti-container {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 1;
+}
+.confetti-piece {
+  position: absolute;
+  top: -12px;
+  border-radius: 2px;
+  animation: confetti-fall linear forwards;
+}
+@keyframes confetti-fall {
+  to { transform: translateY(105vh) rotate(600deg); opacity: 0.2; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .win-card { animation: none; }
+  .confetti-piece { display: none; }
+}
+
+/* Тумблер режима */
+.mode-bar {
+  display: flex;
+  gap: 10px;
+  padding: 12px 16px;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.mode-btn {
+  padding: 10px 22px;
+  border: 2px solid var(--ink);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.mode-btn.is-active {
+  background: var(--ink);
+  color: var(--bg);
+}
+.hint-btn {
+  padding: 10px 14px;
+  border: 2px solid var(--ink-light);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink-light);
+  font-family: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.hint-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ---- Экран календаря ---- */
+
+.cal-back-btn {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+}
+
+.cal-wrap {
+  width: min(300px, 90vw);
+}
+
+.cal-title {
+  text-align: center;
+  font-size: 1.1rem;
+  font-weight: normal;
+  margin-bottom: 16px;
+  color: var(--ink);
+}
+
+.cal-weekdays,
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.cal-weekdays {
+  margin-bottom: 4px;
+}
+
+.cal-weekday {
+  text-align: center;
+  font-size: 0.68rem;
+  color: var(--ink-light);
+  padding-bottom: 4px;
+}
+
+.cal-day {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.82rem;
+  border-radius: var(--radius);
+  border: 1.5px solid transparent;
+  color: var(--ink);
+}
+
+.cal-day.empty { visibility: hidden; }
+
+.cal-day.done {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.cal-day.today {
+  border-color: var(--ink);
+  font-weight: bold;
+}
+
+.cal-day.today.done {
+  border-color: rgba(43, 39, 35, 0.35);
+}

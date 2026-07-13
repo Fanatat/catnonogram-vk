@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>Кот и японские кроссворды</title>
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- VK Bridge (@vkontakte/vk-bridge 3.0.2) — вшит локально, без CDN. -->
+  <script src="vk-bridge.min.js"></script>
+</head>
+<body>
+  <div id="app">
+
+    <!-- Экран загрузки -->
+    <section id="loading" class="screen is-active">
+      <div class="loader" aria-hidden="true"></div>
+      <p class="loading-text" data-i18n="loading">Загрузка…</p>
+    </section>
+
+    <!-- Главное меню -->
+    <section id="menu" class="screen">
+      <button id="btn-sound-menu" class="icon-btn sound-btn" aria-label="Звук">♪</button>
+      <header class="menu-head">
+        <h1 class="game-title" data-i18n="gameTitle">Кот и японские кроссворды</h1>
+        <p class="game-sub" data-i18n="gameSub">японский кроссворд</p>
+      </header>
+
+      <nav class="menu-actions">
+        <button id="btn-continue" class="btn btn-secondary" hidden data-i18n="continue">Продолжить</button>
+        <button id="btn-play"     class="btn btn-primary"          data-i18n="play">Играть</button>
+        <button id="btn-daily"    class="btn btn-secondary" hidden data-i18n="daily">Ежедневный</button>
+      </nav>
+      <div class="daily-meta" hidden style="display:none">
+        <p id="daily-streak" class="daily-streak" hidden></p>
+        <button id="btn-calendar" class="icon-btn cal-icon-btn" aria-label="Календарь">▦</button>
+      </div>
+
+      <p id="dev-badge" class="dev-badge" hidden>dev-режим: платформа не подключена</p>
+    </section>
+
+    <!-- Экран календаря -->
+    <section id="calendar" class="screen">
+      <button id="btn-back-cal" class="icon-btn cal-back-btn" aria-label="Назад">‹</button>
+      <div class="cal-wrap">
+        <h2 id="cal-title" class="cal-title"></h2>
+        <div id="cal-weekdays" class="cal-weekdays"></div>
+        <div id="cal-grid" class="cal-grid"></div>
+      </div>
+    </section>
+
+    <!-- Экран выбора сложности -->
+    <section id="category" class="screen">
+      <button id="btn-back-cat" class="icon-btn cat-back-btn" aria-label="Назад">‹</button>
+      <h2 class="cat-screen-title" data-i18n="chooseLevel">Выберите сложность</h2>
+      <div id="category-list" class="category-list"></div>
+    </section>
+
+    <!-- Экран игры -->
+    <section id="game" class="screen">
+      <header class="game-head">
+        <button id="btn-back" class="icon-btn" aria-label="Назад">‹</button>
+        <span id="game-level-label" class="level-label"></span>
+        <button id="btn-clear-board" class="icon-btn" aria-label="Очистить">⟲</button>
+        <button id="btn-sound-game" class="icon-btn sound-btn" aria-label="Звук">♪</button>
+      </header>
+      <div id="puzzle-container" class="puzzle-container"></div>
+      <p id="level-hint" class="level-hint" hidden data-i18n="levelHint">Проведи по клеткам, чтобы закрасить</p>
+      <div class="mode-bar">
+        <button class="mode-btn is-active" data-mode="1" data-i18n="modeFill">■ Закрасить</button>
+        <button class="mode-btn"           data-mode="2" data-i18n="modeCross">✕ Крестик</button>
+        <button id="btn-hint" class="hint-btn" data-i18n="hint">▶ Открыть клетку</button>
+      </div>
+
+      <!-- Победный оверлей -->
+      <div id="win-overlay" class="overlay" hidden>
+        <div id="confetti-container" class="confetti-container" aria-hidden="true"></div>
+        <div class="win-card">
+          <div class="silhouette-mount">
+            <canvas id="win-canvas" class="win-canvas"></canvas>
+          </div>
+          <p id="win-theme-label" class="win-theme"></p>
+          <button id="btn-next-level" class="btn btn-primary" data-i18n="next">Дальше</button>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Онбординг: одноразовый оверлей «Как читать числа» -->
+    <div id="onboarding-overlay" class="overlay" hidden>
+      <div class="onboarding-card">
+        <h2 class="onboarding-title" data-i18n="howToTitle">Как читать числа</h2>
+
+        <!-- Наглядный пример: подсказка «3 1» → три закрашенных, пропуск, одна -->
+        <div class="how-example" aria-hidden="true">
+          <div class="how-clue">3&nbsp;1</div>
+          <div class="how-cells">
+            <div class="how-cell filled"></div>
+            <div class="how-cell filled"></div>
+            <div class="how-cell filled"></div>
+            <div class="how-cell"></div>
+            <div class="how-cell filled"></div>
+          </div>
+        </div>
+
+        <p class="onboarding-text" data-i18n="howToLine1">Числа — длины закрашенных серий слева направо и сверху вниз.</p>
+        <p class="onboarding-text" data-i18n="howToLine2">Между сериями — хотя бы одна пустая клетка.</p>
+        <button id="btn-onboarding-ok" class="btn btn-primary" data-i18n="howToOk">Понятно!</button>
+      </div>
+    </div>
+
+    <!-- Подтверждение очистки поля (свободный режим — ошибки не подсвечиваются,
+         поэтому нужен явный способ начать текущий уровень заново) -->
+    <div id="clear-confirm-overlay" class="overlay" hidden>
+      <div class="onboarding-card">
+        <p class="onboarding-text" data-i18n="clearConfirmText">Очистить поле? Прогресс на этом уровне будет потерян</p>
+        <div class="confirm-actions">
+          <button id="btn-clear-cancel" class="btn btn-secondary" data-i18n="clearCancel">Отмена</button>
+          <button id="btn-clear-yes"    class="btn btn-primary"   data-i18n="clearYes">Да</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+<script src="i18n.js?v=7"></script>
+  <script src="platform.js?v=1"></script>
+  <script src="save.js?v=2"></script>
+  <script src="sound.js?v=3"></script>
+  <script src="levels.js?v=4"></script>
+  <script src="nonogram.js?v=5"></script>
+  <script src="main.js?v=8"></script>
+</body>
+</html>
