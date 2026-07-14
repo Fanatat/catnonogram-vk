@@ -27,6 +27,12 @@ window.Platform = (function () {
   var INIT_TIMEOUT = 2500; // мс — после этого уходим в dev-режим
 
   var available = false;
+  // Фикс 7: реклама на ВК по факту ОТДАЁТСЯ (подтверждено на живом устройстве) —
+  // false бывает только при adblock у конкретного игрока. В этом случае кнопка
+  // подсказки больше НЕ прячется — остаётся и работает бесплатно (см. showRewarded).
+  var rewardedAvailable = true; // оптимистичный дефолт, уточняется в checkRewardedAvailable()
+  var HINT_LABEL_AD   = '▶ Открыть клетку'; // обещает ролик — только когда он реально будет
+  var HINT_LABEL_FREE = 'Открыть клетку';   // без иконки «плей» — реклама не обещана
 
   function hasBridge() {
     return typeof vkBridge !== 'undefined';
@@ -65,11 +71,11 @@ window.Platform = (function () {
       });
   }
 
-  // Фикс 4: на ВК монетизация может быть не подключена — реклама не отдаётся,
-  // кнопка «подсказка за рекламу» становится мёртвой (нажимается, ничего не
-  // происходит). main.js не трогаем (общий файл, кнопку не прячет вообще) —
-  // прячем её здесь, только для VK-сборки. Если ВК начнёт отдавать рекламу,
-  // проверка в следующем сеансе вернёт true и кнопка появится сама.
+  // Фикс 7: проверяем доступность rewarded ТОЛЬКО чтобы решить, платный или
+  // бесплатный режим подсказки — кнопку больше не прячем (main.js не трогаем,
+  // текст на кнопке правим здесь же). Если ВК начнёт отдавать рекламу —
+  // следующая проверка (при следующей загрузке) вернёт true, и кнопка сама
+  // вернётся в платный режим, без пересборки билда.
   function checkRewardedAvailable() {
     var timeoutP = new Promise(function (resolve) {
       setTimeout(function () { resolve(false); }, 1500);
@@ -82,10 +88,10 @@ window.Platform = (function () {
     ])
       .catch(function () { return false; })
       .then(function (rewardedOk) {
-        if (rewardedOk) return;
+        rewardedAvailable = rewardedOk;
         var btn = document.getElementById('btn-hint');
-        if (btn) btn.hidden = true;
-        console.warn('[Platform] Rewarded недоступен на этой площадке — кнопка подсказки скрыта.');
+        if (btn) btn.textContent = rewardedOk ? HINT_LABEL_AD : HINT_LABEL_FREE;
+        console.log('[Platform] Rewarded ' + (rewardedOk ? 'доступен' : 'недоступен (adblock?) — подсказка бесплатная'));
       });
   }
 
@@ -156,8 +162,15 @@ window.Platform = (function () {
 
   // Реклама за награду. onReward() — выдать награду. onClose() — вернуть
   // звук/состояние (зовём всегда после закрытия).
+  // Фикс 7: если проверка показала, что rewarded недоступен (adblock) —
+  // ролик вообще не запускаем, награда выдаётся сразу («бесплатный режим»).
   function showRewarded(onReward, onClose) {
     if (!available) { if (onClose) onClose(false); return; }
+    if (!rewardedAvailable) {
+      if (onReward) onReward();
+      if (onClose) onClose(true);
+      return;
+    }
     vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'reward' })
       .then(function (res) {
         var rewarded = res.result === true;
