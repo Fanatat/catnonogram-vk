@@ -56,11 +56,36 @@ window.Platform = (function () {
         }
         available = true;
         console.log('[Platform] VK Bridge init OK.');
+        checkRewardedAvailable(); // не блокирует init() — фикс 4, см. ниже
         return true;
       })
       .catch(function (err) {
         console.error('[Platform] VKWebAppInit ошибка:', err);
         return false;
+      });
+  }
+
+  // Фикс 4: на ВК монетизация может быть не подключена — реклама не отдаётся,
+  // кнопка «подсказка за рекламу» становится мёртвой (нажимается, ничего не
+  // происходит). main.js не трогаем (общий файл, кнопку не прячет вообще) —
+  // прячем её здесь, только для VK-сборки. Если ВК начнёт отдавать рекламу,
+  // проверка в следующем сеансе вернёт true и кнопка появится сама.
+  function checkRewardedAvailable() {
+    var timeoutP = new Promise(function (resolve) {
+      setTimeout(function () { resolve(false); }, 1500);
+    });
+    Promise.race([
+      vkBridge.send('VKWebAppCheckNativeAds', { ad_format: 'reward' }).then(function (res) {
+        return res && res.result === true;
+      }),
+      timeoutP,
+    ])
+      .catch(function () { return false; })
+      .then(function (rewardedOk) {
+        if (rewardedOk) return;
+        var btn = document.getElementById('btn-hint');
+        if (btn) btn.hidden = true;
+        console.warn('[Platform] Rewarded недоступен на этой площадке — кнопка подсказки скрыта.');
       });
   }
 

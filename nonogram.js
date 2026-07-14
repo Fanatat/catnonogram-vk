@@ -19,11 +19,17 @@ window.Nonogram = (function () {
   var _strokeSnapshot = null; // снимок доски в начале штриха для отмены при pinch
 
   // ---- Зум / пан ----
+  // Зум меняет РЕАЛЬНЫЙ размер клетки (--cell) и перекладку, а не CSS-
+  // scale() поверх готовой картинки — иначе GPU-слой (will-change:transform)
+  // растрирует текст один раз и растягивает битмап, отсюда размытые цифры.
+  // Transform на _viewport остаётся ТОЛЬКО translate (пан).
   var _scale      = 1;
   var _tx         = 0;       // translate X
   var _ty         = 0;       // translate Y
+  var _baseCell   = 32;       // px клетки при scale=1 — считается в render() от реального контейнера
   var _viewport   = null;    // div-обёртка с transform
   var _container  = null;    // puzzle-container (родитель)
+  var _puzzleEl   = null;    // .puzzle — на нём выставляется --cell
 
   // Состояние pinch
   var _pinch        = null;   // { dist, cx, cy, tx, ty, scale }
@@ -91,19 +97,45 @@ window.Nonogram = (function () {
   var SCALE_MIN = 1, SCALE_MAX = 4;
 
   function applyTransform() {
-    if (!_viewport) return;
-    // Ограничиваем пан: не уходим за края контейнера
+    if (!_viewport || !_puzzleEl) return;
+    // Реальный релейаут в текущем масштабе (Фикс 6) — не CSS scale().
+    var eff = Math.round(_baseCell * _scale);
+    _puzzleEl.style.setProperty('--cell', eff + 'px');
+
+    // Ограничиваем пан: не уходим за края контейнера.
+    // scrollWidth/Height читаем ПОСЛЕ установки --cell — это уже фактический размер.
     if (_container) {
       var cw = _container.clientWidth;
       var ch = _container.clientHeight;
       var vw = _viewport.scrollWidth;
       var vh = _viewport.scrollHeight;
-      var maxTx = Math.max(0, (vw * _scale - cw) / 2);
-      var maxTy = Math.max(0, (vh * _scale - ch) / 2);
+      var maxTx = Math.max(0, (vw - cw) / 2);
+      var maxTy = Math.max(0, (vh - ch) / 2);
       _tx = Math.max(-maxTx, Math.min(maxTx, _tx));
       _ty = Math.max(-maxTy, Math.min(maxTy, _ty));
     }
-    _viewport.style.transform = 'translate(' + _tx + 'px,' + _ty + 'px) scale(' + _scale + ')';
+    _viewport.style.transform = 'translate(' + _tx + 'px,' + _ty + 'px)';
+  }
+
+  /* ----------------------------------------------------------
+     zoomAtPoint — зум с сохранением точки (clientX, clientY) на месте.
+     Общий механизм для колеса мыши и pinch (Фикс 3): вместо зума
+     к центру контейнера, считаем сдвиг translate так, чтобы контентная
+     точка под курсором/пальцами осталась под ним же после смены масштаба.
+  ---------------------------------------------------------- */
+  function zoomAtPoint(newScale, clientX, clientY) {
+    newScale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, newScale));
+    if (!_viewport) { _scale = newScale; return; }
+    var rect = _viewport.getBoundingClientRect();
+    var ratioX = rect.width  ? (clientX - rect.left) / rect.width  : 0.5;
+    var ratioY = rect.height ? (clientY - rect.top)  / rect.height : 0.5;
+    var factor = newScale / _scale;
+    var dW = rect.width  * (factor - 1);
+    var dH = rect.height * (factor - 1);
+    _tx -= dW * (ratioX - 0.5);
+    _ty -= dH * (ratioY - 0.5);
+    _scale = newScale;
+    applyTransform();
   }
 
   function pinchDist(touches) {
@@ -131,13 +163,11 @@ window.Nonogram = (function () {
       window.removeEventListener('pointercancel', onPointerUp);
       cancelStroke();
     }
+    var c0 = pinchCenter(e.touches);
     _pinch = {
-      dist:  pinchDist(e.touches),
-      cx:    pinchCenter(e.touches).x,
-      cy:    pinchCenter(e.touches).y,
-      scale: _scale,
-      tx:    _tx,
-      ty:    _ty,
+      dist: pinchDist(e.touches),
+      cx:   c0.x,
+      cy:   c0.y,
     };
   }
 
@@ -145,18 +175,22 @@ window.Nonogram = (function () {
     if (!_pinch || e.touches.length < 2) return;
     e.preventDefault();
     var newDist = pinchDist(e.touches);
-    var ratio   = newDist / _pinch.dist;
-    var newScale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, _pinch.scale * ratio));
+    var ratio    = newDist / _pinch.dist;
+    var newScale = _scale * ratio;
+
+    // Зум к точке, где был центр жеста мгновение назад (честная привязка,
+    // а не к центру контейнера), затем отдельно — пан на сдвиг центра
+    // жеста (палец/пальцы уехали в сторону).
+    zoomAtPoint(newScale, _pinch.cx, _pinch.cy);
 
     var center = pinchCenter(e.touches);
-    // Смещение центра жеста — добавляем как пан
-    var dPanX = center.x - _pinch.cx;
-    var dPanY = center.y - _pinch.cy;
-
-    _scale = newScale;
-    _tx    = _pinch.tx + dPanX;
-    _ty    = _pinch.ty + dPanY;
+    _tx += center.x - _pinch.cx;
+    _ty += center.y - _pinch.cy;
     applyTransform();
+
+    _pinch.dist = newDist;
+    _pinch.cx   = center.x;
+    _pinch.cy   = center.y;
   }
 
   function onTouchEnd(e) {
@@ -164,12 +198,11 @@ window.Nonogram = (function () {
     if (e.touches.length === 0) _pinchActive = false;
   }
 
-  // Колесо мыши — зум
+  // Колесо мыши — зум К ТОЧКЕ ПОД КУРСОРОМ (Фикс 3), не к центру поля.
   function onWheel(e) {
     e.preventDefault();
     var delta = e.deltaY > 0 ? 0.9 : 1.1;
-    _scale = Math.max(SCALE_MIN, Math.min(SCALE_MAX, _scale * delta));
-    applyTransform();
+    zoomAtPoint(_scale * delta, e.clientX, e.clientY);
   }
 
   // Средняя кнопка мыши — пан
@@ -426,7 +459,11 @@ window.Nonogram = (function () {
     beginStroke();
 
     var changed = applyToCell(cell.r, cell.c);
-    autoFillCrosses(cell.r, cell.c);
+    // Авто-крестик обязан быть обратимым (Фикс 5): line-solver перезапускаем
+    // только после 'set' (добавили информацию). После 'clear' — не гоняем,
+    // иначе тот же ошибочный расклад мгновенно ставит снятый крестик обратно
+    // в рамках того же тапа, и игрок физически не может его убрать.
+    if (_dragAction === 'set') autoFillCrosses(cell.r, cell.c);
     if (changed) tryWin();
 
     window.addEventListener('pointermove',   onPointerMove);
@@ -441,7 +478,7 @@ window.Nonogram = (function () {
     if (_lastCell && _lastCell.r === cell.r && _lastCell.c === cell.c) return;
     _lastCell = { r: cell.r, c: cell.c };
     var changed = applyToCell(cell.r, cell.c);
-    autoFillCrosses(cell.r, cell.c);
+    if (_dragAction === 'set') autoFillCrosses(cell.r, cell.c); // см. onPointerDown
     if (changed) tryWin();
   }
 
@@ -485,16 +522,31 @@ window.Nonogram = (function () {
     var maxRowLen = clues.rows.reduce(function (m, r) { return Math.max(m, r.length); }, 0);
     var maxColLen = clues.cols.reduce(function (m, c) { return Math.max(m, c.length); }, 0);
 
-    var NUM_W = 16, NUM_H = 20, PAD = 12, HEAD_H = 52, MODE_H = 64;
+    var NUM_W = 16, NUM_H = 20, PAD = 12;
     var rowClueW = maxRowLen * NUM_W + 8;
     var colClueH = maxColLen * NUM_H + 6;
-    var availW = window.innerWidth  - PAD * 2 - rowClueW;
-    var availH = window.innerHeight - PAD * 2 - HEAD_H - MODE_H - colClueH;
-    var cell = Math.max(24, Math.min(56, Math.floor(Math.min(availW / W, availH / H))));
+
+    // Фикс 1: считаем от РЕАЛЬНОГО контейнера (#puzzle-container уже показан
+    // и раскладка уже применена — showScreen('game') зовётся до render()),
+    // а не от window.innerWidth/innerHeight с захардкоженными отступами
+    // шапки/панели. В VK-iframe и на мобильном с адресной строкой это два
+    // разных числа — раньше доска считалась по вторым, а рисовалась в первых.
+    var contRect = container.getBoundingClientRect();
+    var availW = contRect.width  - PAD * 2 - rowClueW;
+    var availH = contRect.height - PAD * 2 - colClueH;
+    // «Вписаться» — обязательное условие, не пожелание: раньше нижний порог
+    // 24px переигрывал расчёт и на 15×15 в портретной ориентации доска не
+    // помещалась (переигрывание подтверждено живым прогоном). Нижний предел
+    // теперь чисто защитный (от нуля/отрицательного при аномальных данных),
+    // верхний (56) — чтобы на большом экране под маленькую сетку клетка не
+    // раздувалась бессмысленно крупно.
+    var cell = Math.max(8, Math.min(56, Math.floor(Math.min(availW / W, availH / H))));
+    _baseCell = cell;
 
     var puzzle = document.createElement('div');
     puzzle.className = 'puzzle';
     puzzle.style.cssText = '--cell:' + cell + 'px;--clue-col-w:' + rowClueW + 'px;';
+    _puzzleEl = puzzle;
 
     var corner = document.createElement('div');
     corner.className = 'puzzle-tl';
@@ -545,9 +597,10 @@ window.Nonogram = (function () {
     gridEl.addEventListener('pointerdown', onPointerDown);
     puzzle.appendChild(gridEl);
 
-    // Viewport-обёртка для transform (зум/пан не трогает layout)
+    // Viewport-обёртка: transform здесь — ТОЛЬКО translate (пан).
+    // Масштаб — через --cell на _puzzleEl (Фикс 6), не scale().
     _viewport = document.createElement('div');
-    _viewport.style.cssText = 'transform-origin:center center;will-change:transform;display:inline-flex;';
+    _viewport.style.cssText = 'will-change:transform;display:inline-flex;';
     _viewport.appendChild(puzzle);
 
     container.innerHTML = '';
