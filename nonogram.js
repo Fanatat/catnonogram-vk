@@ -27,6 +27,7 @@ window.Nonogram = (function () {
   var _tx         = 0;       // translate X
   var _ty         = 0;       // translate Y
   var _baseCell   = 32;       // px клетки при scale=1 — считается в render() от реального контейнера
+  var _rowClueW   = 0;        // px --clue-col-w — от числа подсказок, не от размера контейнера
   var _viewport   = null;    // div-обёртка с transform
   var _container  = null;    // puzzle-container (родитель)
   var _puzzleEl   = null;    // .puzzle — на нём выставляется --cell
@@ -240,6 +241,53 @@ window.Nonogram = (function () {
     _scale = 1; _tx = 0; _ty = 0;
     applyTransform();
   }
+
+  /* ----------------------------------------------------------
+     computeBaseCell — Фикс 1/8: пересчитывает размер клетки «вписаться»
+     от РЕАЛЬНОГО размера контейнера. Используется и в render() (первое
+     открытие уровня), и в onWindowResize (пересчёт при смене размера
+     окна/iframe) — единая точка расчёта, дублировать негде.
+  ---------------------------------------------------------- */
+  function computeBaseCell() {
+    if (!_level || !_container || !_clues) return;
+    var W = _level.width, H = _level.height;
+    var maxRowLen = _clues.rows.reduce(function (m, r) { return Math.max(m, r.length); }, 0);
+    var maxColLen = _clues.cols.reduce(function (m, c) { return Math.max(m, c.length); }, 0);
+    var NUM_W = 16, NUM_H = 20, PAD = 12;
+    _rowClueW = maxRowLen * NUM_W + 8;
+    var colClueH = maxColLen * NUM_H + 6;
+
+    var contRect = _container.getBoundingClientRect();
+    var availW = contRect.width  - PAD * 2 - _rowClueW;
+    var availH = contRect.height - PAD * 2 - colClueH;
+    _baseCell = Math.max(8, Math.min(56, Math.floor(Math.min(availW / W, availH / H))));
+  }
+
+  /* ----------------------------------------------------------
+     Фикс 8: игра не знает заранее размер окна/iframe площадки (телефон,
+     прямой URL с произвольным ресайзом, VK-iframe с фиксированной
+     кабинетом высотой) — пересчитываем «вписаться» при каждом изменении
+     размера, а не только при открытии уровня. Дебаунс 150мс — resize
+     на десктопе сыплет событиями на каждый пиксель протяжки.
+     Масштаб/пан сбрасываем к новому «вписалось» — старый в новых
+     размерах контейнера может как не влезать, так и быть неоправданно
+     мелким, тащить его дальше нет смысла.
+  ---------------------------------------------------------- */
+  var _resizeTimer = null;
+  function onWindowResize() {
+    if (_resizeTimer) clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(function () {
+      _resizeTimer = null;
+      if (!_level || !_container || !_puzzleEl) return;
+      var gameScreen = document.getElementById('game');
+      if (!gameScreen || !gameScreen.classList.contains('is-active')) return; // экран не виден — нечего пересчитывать
+      computeBaseCell();
+      _scale = 1; _tx = 0; _ty = 0;
+      applyTransform();
+    }, 150);
+  }
+  window.addEventListener('resize', onWindowResize);
+  window.addEventListener('orientationchange', onWindowResize);
 
   function attachZoomHandlers(container) {
     _container = container;
@@ -499,7 +547,8 @@ window.Nonogram = (function () {
   ---------------------------------------------------------- */
   function render(level, container, onWin, onMove) {
     detachZoomHandlers(_container);
-    _level  = level;
+    _level     = level;
+    _container = container; // нужен computeBaseCell() ниже; attachZoomHandlers переустановит тем же значением
     _clues  = calcClues(level.solution);
     _onWin  = onWin  || null;
     _onMove = onMove || null;
@@ -519,33 +568,17 @@ window.Nonogram = (function () {
     var clues = calcClues(level.solution);
     var W = level.width, H = level.height;
 
-    var maxRowLen = clues.rows.reduce(function (m, r) { return Math.max(m, r.length); }, 0);
-    var maxColLen = clues.cols.reduce(function (m, c) { return Math.max(m, c.length); }, 0);
-
-    var NUM_W = 16, NUM_H = 20, PAD = 12;
-    var rowClueW = maxRowLen * NUM_W + 8;
-    var colClueH = maxColLen * NUM_H + 6;
-
-    // Фикс 1: считаем от РЕАЛЬНОГО контейнера (#puzzle-container уже показан
-    // и раскладка уже применена — showScreen('game') зовётся до render()),
-    // а не от window.innerWidth/innerHeight с захардкоженными отступами
-    // шапки/панели. В VK-iframe и на мобильном с адресной строкой это два
-    // разных числа — раньше доска считалась по вторым, а рисовалась в первых.
-    var contRect = container.getBoundingClientRect();
-    var availW = contRect.width  - PAD * 2 - rowClueW;
-    var availH = contRect.height - PAD * 2 - colClueH;
-    // «Вписаться» — обязательное условие, не пожелание: раньше нижний порог
-    // 24px переигрывал расчёт и на 15×15 в портретной ориентации доска не
-    // помещалась (переигрывание подтверждено живым прогоном). Нижний предел
-    // теперь чисто защитный (от нуля/отрицательного при аномальных данных),
-    // верхний (56) — чтобы на большом экране под маленькую сетку клетка не
-    // раздувалась бессмысленно крупно.
-    var cell = Math.max(8, Math.min(56, Math.floor(Math.min(availW / W, availH / H))));
-    _baseCell = cell;
+    // Фикс 1/8: считаем от РЕАЛЬНОГО контейнера (#puzzle-container уже
+    // показан — showScreen('game') зовётся до render()), не от
+    // window.innerWidth/innerHeight с захардкоженными отступами шапки/
+    // панели — в VK-iframe и на мобильном с адресной строкой это разные
+    // числа. Та же функция переиспользуется в onWindowResize().
+    computeBaseCell();
+    var cell = _baseCell;
 
     var puzzle = document.createElement('div');
     puzzle.className = 'puzzle';
-    puzzle.style.cssText = '--cell:' + cell + 'px;--clue-col-w:' + rowClueW + 'px;';
+    puzzle.style.cssText = '--cell:' + cell + 'px;--clue-col-w:' + _rowClueW + 'px;';
     _puzzleEl = puzzle;
 
     var corner = document.createElement('div');
