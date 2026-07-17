@@ -63,6 +63,7 @@ window.Platform = (function () {
         available = true;
         console.log('[Platform] VK Bridge init OK.');
         checkRewardedAvailable(); // не блокирует init() — фикс 4, см. ниже
+        requestDesktopResize();   // не блокирует init() — фикс 9C, см. ниже
         return true;
       })
       .catch(function (err) {
@@ -92,6 +93,60 @@ window.Platform = (function () {
         var btn = document.getElementById('btn-hint');
         if (btn) btn.textContent = rewardedOk ? HINT_LABEL_AD : HINT_LABEL_FREE;
         console.log('[Platform] Rewarded ' + (rewardedOk ? 'доступен' : 'недоступен (adblock?) — подсказка бесплатная'));
+      });
+  }
+
+  // Фикс 9C: на десктопе ВК игра сидит в <iframe> ФИКСИРОВАННОЙ высоты
+  // внутри страницы ВК — если страница ВК выше окна браузера, скроллится
+  // она сама, а не наш iframe (наш код об этом узнать не может). Фикс 8/9A
+  // гарантирует, что игра ВПИШЕТСЯ в любую заданную высоту без собственного
+  // скролла — но высоту самого iframe мы можем только ЗАПРОСИТЬ.
+  // VKWebAppResizeWindow — официальный метод (подтверждён в исходниках
+  // VKCOM/vk-mini-apps-api и в самом vk-bridge.min.js — строка проверки
+  // vk_platform=mobile_web), работает ТОЛЬКО в десктоп-вебе. ВК может
+  // урезать запрошенное — фикс 9A гарантирует, что игра всё равно впишется.
+  //
+  // Высота считается не константой страницы, а из измеримых слагаемых:
+  // доска — максимальные width/height по факту загруженных LEVELS (не «15»
+  // руками) × комфортный размер клетки для тапа (44px, ориентир из
+  // стандартных гайдлайнов минимального размера тач-цели). Шапку не берём
+  // измерением DOM: вызов происходит ДО показа игрового экрана (главное
+  // меню ещё не отрисовано), #game скрыт через display:none у предка —
+  // getBoundingClientRect() тогда честно вернул бы 0 (проверено живым
+  // прогоном: запрос уходил заниженным на реальную высоту шапки/панели).
+  // .game-head — фиксированная величина из style.css (height:52px, не
+  // зависит от контента). Панель кнопок не фиксирована (clamp() под Фикс
+  // 9B) — берём документированную оценку по её типичному отрисованному
+  // диапазону, не измеряем скрытый DOM.
+  function requestDesktopResize() {
+    try {
+      var p = new URLSearchParams(location.search);
+      if (p.get('vk_platform') !== 'desktop_web') return; // «только Web» — не мобильный клиент
+    } catch (e) { return; }
+
+    if (!window.LEVELS || !window.LEVELS.length) return;
+
+    var maxW = 1, maxH = 1;
+    window.LEVELS.forEach(function (lvl) {
+      if (lvl.width  > maxW) maxW = lvl.width;
+      if (lvl.height > maxH) maxH = lvl.height;
+    });
+
+    var TARGET_CELL = 44;      // комфортный тач-таргет, тот же порядок, что у кнопок
+    var CLUE_ALLOWANCE = 120;  // запас под колонку/строку подсказок + паддинги — оценочно, не мера содержимого
+    var HEADER_H = 52;         // .game-head { height: 52px } — фиксированное значение в style.css
+    var BUTTON_BAR_H = 76;     // .mode-bar: паддинги (24) + типичная высота кнопок при clamp() — оценка
+
+    var wantWidth  = Math.round(maxW * TARGET_CELL + CLUE_ALLOWANCE);
+    var wantHeight = Math.round(HEADER_H + BUTTON_BAR_H + maxH * TARGET_CELL + CLUE_ALLOWANCE);
+
+    vkBridge.send('VKWebAppResizeWindow', { width: wantWidth, height: wantHeight })
+      .then(function (res) {
+        console.log('[Platform] VKWebAppResizeWindow запрошено ' + wantWidth + '×' + wantHeight +
+          ', ВК применил ' + (res && res.width) + '×' + (res && res.height) + '.');
+      })
+      .catch(function (e) {
+        console.warn('[Platform] VKWebAppResizeWindow недоступен:', e);
       });
   }
 
