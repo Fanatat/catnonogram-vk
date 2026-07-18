@@ -21,7 +21,51 @@
    Фикс: vkBridge.isEmbedded() проверяем ДО send();
          таймаут 2.5 сек покрывает сценарий 2.
    При провале — dev-режим (isAvailable=false, дев-бейдж, игра без сейва/рекламы).
+
+   Частота записи (доработка, п.3): dev.vk.com документирует лимит
+   VKWebAppStorageSet в 1000 вызовов/час на пользователя. main.js шлёт
+   Platform.save() по своему 5-секундному дебаунсу хода — этого структурно
+   достаточно, чтобы при активной непрерывной игре подойти к лимиту вплотную
+   (расчёт — в отчёте). Здесь, внутри VK-адаптера (не трогая main.js и не
+   влияя на Яндекс-сборку): базовый дебаунс поднят до 10 с, плюс счётчик
+   реально отправленных записей за скользящий час с мягким торможением —
+   чем ближе к лимиту, тем длиннее пауза перед следующей отправкой. Ничего
+   не выбрасывается: каждый save() лишь обновляет "последнее состояние",
+   которое рано или поздно уйдёт целиком (правило студии — сейв всегда
+   пишется целиком, поэтому объединение нескольких вызовов в один безопасно).
+   События (уход со страницы, показ рекламы) форсируют немедленный флаш —
+   не ждут дебаунса.
    ============================================================ */
+
+// Чистые функции без побочных эффектов — вынесены наружу IIFE, чтобы их
+// можно было протестировать в Node без мока vkBridge/window (см.
+// tools/test_vk_write_throttle.js).
+var VK_SAVE_DEBOUNCE_MS      = 10000; // базовый дебаунс адаптера
+var VK_WRITE_LIMIT_PER_HOUR  = 1000;  // dev.vk.com: лимит VKWebAppStorageSet
+var VK_SOFT_BRAKE_THRESHOLD  = 700;   // с этого количества/час начинаем тормозить
+var VK_MAX_DEBOUNCE_MS       = 60000; // потолок паузы вплотную к лимиту
+
+// Выбрасывает из лога отметки времени старше скользящего часа. Чистая
+// функция — возвращает НОВЫЙ массив, не мутирует переданный.
+function vkPruneWriteLog(writeLog, nowMs) {
+  var hourAgo = nowMs - 3600000;
+  var i = 0;
+  while (i < writeLog.length && writeLog[i] < hourAgo) i++;
+  return writeLog.slice(i);
+}
+
+// Сколько миллисекунд ждать перед следующей отправкой, исходя из числа
+// реальных записей за последний скользящий час. До порога — базовый
+// дебаунс; после — линейный рост до потолка на подходе к лимиту.
+function vkComputeDebounceDelay(writeCountLastHour) {
+  if (writeCountLastHour < VK_SOFT_BRAKE_THRESHOLD) return VK_SAVE_DEBOUNCE_MS;
+  var span = VK_WRITE_LIMIT_PER_HOUR - VK_SOFT_BRAKE_THRESHOLD;
+  var over = span > 0 ? (writeCountLastHour - VK_SOFT_BRAKE_THRESHOLD) / span : 1;
+  var ramped = VK_SAVE_DEBOUNCE_MS + over * (VK_MAX_DEBOUNCE_MS - VK_SAVE_DEBOUNCE_MS);
+  return Math.min(VK_MAX_DEBOUNCE_MS, Math.max(VK_SAVE_DEBOUNCE_MS, ramped));
+}
+
+if (typeof window !== 'undefined') {
 window.Platform = (function () {
   var STORAGE_KEY  = 'nonogram_save';
   var INIT_TIMEOUT = 2500; // мс — после этого уходим в dev-режим
@@ -123,17 +167,55 @@ window.Platform = (function () {
   // перезагрузку при ручной проверке вне VK-контейнера.
   var DEV_SAVE_KEY = 'nonogram_dev_save_vk';
 
+  // Частота записи (см. заголовок файла): _pendingState — последнее
+  // состояние на отправку (каждый save() просто обновляет его — сейв
+  // всегда целиком, поэтому потерь при объединении вызовов нет);
+  // _flushTimer — текущий отложенный вызов; _writeLog — отметки времени
+  // РЕАЛЬНО отправленных vkBridge.send за скользящий час (для торможения).
+  var _pendingState = null;
+  var _flushTimer    = null;
+  var _writeLog      = [];
+
+  function vkFlushPending() {
+    _flushTimer = null;
+    if (_pendingState == null) return;
+    var toSend = _pendingState;
+    _pendingState = null;
+    _writeLog = vkPruneWriteLog(_writeLog, Date.now());
+    _writeLog.push(Date.now());
+    vkBridge.send('VKWebAppStorageSet', {
+      key:   STORAGE_KEY,
+      value: JSON.stringify(toSend),
+    }).catch(function (e) {
+      console.error('[Platform] StorageSet ошибка:', e);
+    });
+  }
+
+  // Форсирует немедленную отправку отложенного состояния (если есть) —
+  // события «уход со страницы» / «перед рекламой» не должны ждать дебаунса.
+  function vkFlushNow() {
+    if (_flushTimer) { clearTimeout(_flushTimer); _flushTimer = null; }
+    vkFlushPending();
+  }
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'hidden') vkFlushNow();
+    });
+  }
+
   function save(fullState) {
     if (!available) {
       try { localStorage.setItem(DEV_SAVE_KEY, JSON.stringify(fullState)); } catch (e) { /* dev-режим, падать нельзя */ }
       return Promise.resolve();
     }
-    return vkBridge.send('VKWebAppStorageSet', {
-      key:   STORAGE_KEY,
-      value: JSON.stringify(fullState),
-    }).catch(function (e) {
-      console.error('[Platform] StorageSet ошибка:', e);
-    });
+    _pendingState = fullState;
+    if (!_flushTimer) {
+      _writeLog = vkPruneWriteLog(_writeLog, Date.now());
+      var delay = vkComputeDebounceDelay(_writeLog.length);
+      _flushTimer = setTimeout(vkFlushPending, delay);
+    }
+    return Promise.resolve();
   }
 
   function load() {
@@ -163,6 +245,7 @@ window.Platform = (function () {
     function done() { if (!finished) { finished = true; if (onDone) onDone(); } }
 
     if (!available) { done(); return; }
+    vkFlushNow(); // событие «перед рекламой» — не ждём дебаунса
     vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'interstitial' })
       .then(done)
       .catch(function (e) { console.warn('[Platform] interstitial недоступен:', e); done(); });
@@ -179,6 +262,7 @@ window.Platform = (function () {
       if (onClose) onClose(true);
       return;
     }
+    vkFlushNow(); // событие «перед рекламой» — не ждём дебаунса
     vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'reward' })
       .then(function (res) {
         var rewarded = res.result === true;
@@ -203,3 +287,17 @@ window.Platform = (function () {
     showRewarded: showRewarded,
   };
 })();
+}
+
+// Экспорт для юнит-тестов (Node, без window/vkBridge) — сама функция
+// вытеснения/торможения чистая и не нуждается в браузерном окружении.
+if (typeof module === 'object' && module.exports) {
+  module.exports = {
+    computeDebounceDelay: vkComputeDebounceDelay,
+    pruneWriteLog:        vkPruneWriteLog,
+    SAVE_DEBOUNCE_MS:     VK_SAVE_DEBOUNCE_MS,
+    WRITE_LIMIT_PER_HOUR: VK_WRITE_LIMIT_PER_HOUR,
+    SOFT_BRAKE_THRESHOLD: VK_SOFT_BRAKE_THRESHOLD,
+    MAX_DEBOUNCE_MS:      VK_MAX_DEBOUNCE_MS,
+  };
+}

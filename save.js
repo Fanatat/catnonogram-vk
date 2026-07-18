@@ -11,6 +11,13 @@
    Формат апдейта (текущий): полная структура со всеми полями —
    при каждом сохранении пишется целиком (правило студии), поэтому
    migrate() тоже всегда возвращает полностью заполненный объект.
+
+   Компактная доска (feature/library, фаза 1, п.3): вместо массива
+   массивов — { w, h, rle, seq }, где rle — строка серий "значение:
+   количество" по строкам слева направо, сверху вниз. seq — момент
+   последней записи (Date.now()) для вытеснения самых старых недо-
+   решённых досок. migrate() читает и старый (массив массивов), и
+   новый формат — на запись всегда уходит компактный.
    ============================================================ */
 
 (function (root, factory) {
@@ -20,6 +27,118 @@
     root.Save = factory();
   }
 })(typeof window !== 'undefined' ? window : this, function () {
+
+  // Единственное место для обеих констант (п.3в) — потолок числа
+  // недорешённых досок кампании и байтовый лимит на сериализованный сейв.
+  var MAX_UNFINISHED_BOARDS = 3;
+  var SAVE_SIZE_GUARD_BYTES = 2000;
+
+  // true, если доска не содержит ни одной значимой отметки (закраски
+  // или крестика) — такую доску незачем хранить в сейве.
+  function boardIsEmpty(board) {
+    if (!board) return true;
+    for (var r = 0; r < board.length; r++) {
+      var row = board[r];
+      for (var c = 0; c < row.length; c++) {
+        if (row[c]) return false;
+      }
+    }
+    return true;
+  }
+
+  // Массив массивов → { w, h, rle, seq }. seq необязателен (для dailyBoard,
+  // где вытеснение не применяется, можно не передавать).
+  function encodeBoard(board, seq) {
+    var h = board.length;
+    var w = h ? board[0].length : 0;
+    var runs = [];
+    var curVal = null, curCount = 0;
+    for (var r = 0; r < h; r++) {
+      for (var c = 0; c < w; c++) {
+        var v = board[r][c] || 0;
+        if (v === curVal) {
+          curCount++;
+        } else {
+          if (curCount > 0) runs.push(curVal + ':' + curCount);
+          curVal = v;
+          curCount = 1;
+        }
+      }
+    }
+    if (curCount > 0) runs.push(curVal + ':' + curCount);
+    var encoded = { w: w, h: h, rle: runs.join(',') };
+    if (seq != null) encoded.seq = seq;
+    return encoded;
+  }
+
+  // { w, h, rle } → массив массивов.
+  function decodeBoard(encoded) {
+    var w = encoded.w, h = encoded.h;
+    var flat = [];
+    (encoded.rle ? encoded.rle.split(',') : []).forEach(function (tok) {
+      if (!tok) return;
+      var parts = tok.split(':');
+      var val = +parts[0], count = +parts[1];
+      for (var i = 0; i < count; i++) flat.push(val);
+    });
+    var board = [];
+    for (var r = 0; r < h; r++) board.push(flat.slice(r * w, (r + 1) * w));
+    return board;
+  }
+
+  function isEncodedBoard(x) {
+    return !!x && typeof x === 'object' && !Array.isArray(x)
+      && typeof x.rle === 'string' && typeof x.w === 'number' && typeof x.h === 'number';
+  }
+
+  // Принимает ЛЮБОЙ формат доски (старый массив массивов ИЛИ компактный
+  // {w,h,rle}) и всегда возвращает массив массивов. null/битые данные → null.
+  function decodeBoardAny(x) {
+    if (Array.isArray(x)) return x;
+    if (isEncodedBoard(x)) return decodeBoard(x);
+    return null;
+  }
+
+  // Ключ самой старой (по seq) доски в boardStates, либо null, если пусто.
+  // Записи без seq (унаследованные от миграции легаси-массивов без метки
+  // времени) считаются самыми старыми — сортировка ставит их первыми.
+  function oldestBoardKey(boardStates) {
+    var keys = Object.keys(boardStates);
+    if (!keys.length) return null;
+    keys.sort(function (a, b) {
+      return (boardStates[a].seq || 0) - (boardStates[b].seq || 0);
+    });
+    return keys[0];
+  }
+
+  // Потолок «последних недорешённых досок» (п.3б) — вытесняет самые
+  // старые, пока их не останется maxCount. Мутирует boardStates на месте.
+  function capUnfinishedBoards(boardStates, maxCount) {
+    while (Object.keys(boardStates).length > maxCount) {
+      var oldest = oldestBoardKey(boardStates);
+      if (oldest == null) break;
+      delete boardStates[oldest];
+    }
+    return boardStates;
+  }
+
+  function payloadSize(payload) {
+    return new Blob([JSON.stringify(payload)]).size;
+  }
+
+  // Сторож перед записью (п.3в): пока сериализованный payload больше
+  // limitBytes — выбрасывает САМУЮ СТАРУЮ недорешённую доску кампании.
+  // Останавливается, когда boardStates опустел (дальше выбрасывать нечего —
+  // остальные поля сейва сторож не трогает). Мутирует payload.boardStates.
+  function enforceSizeGuard(payload, limitBytes) {
+    capUnfinishedBoards(payload.boardStates, MAX_UNFINISHED_BOARDS);
+    while (payloadSize(payload) > limitBytes) {
+      var oldest = oldestBoardKey(payload.boardStates);
+      if (oldest == null) break;
+      delete payload.boardStates[oldest];
+    }
+    return payload;
+  }
 
   function emptySave() {
     return {
@@ -60,18 +179,53 @@
 
     out.onboardingSeen = !!oldSave.onboardingSeen;
     out.muted          = !!oldSave.muted;
-    out.boardStates    = (oldSave.boardStates && typeof oldSave.boardStates === 'object') ? oldSave.boardStates : {};
+    var rawBoardStates = (oldSave.boardStates && typeof oldSave.boardStates === 'object') ? oldSave.boardStates : {};
     out.dailyDone      = (typeof oldSave.dailyDone === 'string') ? oldSave.dailyDone : '';
     out.streak         = (typeof oldSave.streak === 'number') ? oldSave.streak : 0;
     out.dailyDays      = (oldSave.dailyDays && typeof oldSave.dailyDays === 'object') ? oldSave.dailyDays : {};
-    out.dailyBoard     = (oldSave.dailyBoard && typeof oldSave.dailyBoard === 'object') ? oldSave.dailyBoard : null;
+    var rawDailyBoard  = (oldSave.dailyBoard && typeof oldSave.dailyBoard === 'object') ? oldSave.dailyBoard : null;
     out.dailyBoardDate = (typeof oldSave.dailyBoardDate === 'string') ? oldSave.dailyBoardDate : '';
+
+    // Подчистка «призрачных» пустых досок — старые сейвы могли записать
+    // недорешённую доску, которую потом стёрли до нуля (см. фикс в main.js:
+    // flushBoardSave/flushDailySave больше не пишут пустые матрицы, но
+    // уже сохранённые ранее нужно один раз тихо убрать при загрузке) —
+    // и заодно переводит и старый (массив массивов), и новый (компактный)
+    // формат досок в единый компактный вид, без отдельной версии формата.
+    var cleanedBoardStates = {};
+    var legacySeq = 0; // унаследованные записи без seq получают возрастающий условный порядок
+    Object.keys(rawBoardStates).forEach(function (k) {
+      var decoded = decodeBoardAny(rawBoardStates[k]);
+      if (!decoded || boardIsEmpty(decoded)) return;
+      var existingSeq = (rawBoardStates[k] && typeof rawBoardStates[k].seq === 'number') ? rawBoardStates[k].seq : (legacySeq++);
+      cleanedBoardStates[k] = encodeBoard(decoded, existingSeq);
+    });
+    out.boardStates = capUnfinishedBoards(cleanedBoardStates, MAX_UNFINISHED_BOARDS);
+
+    var decodedDaily = decodeBoardAny(rawDailyBoard);
+    if (!decodedDaily || boardIsEmpty(decodedDaily)) {
+      out.dailyBoard     = null;
+      out.dailyBoardDate = '';
+    } else {
+      out.dailyBoard = encodeBoard(decodedDaily);
+    }
 
     return out;
   }
 
   return {
-    emptySave: emptySave,
-    migrate:   migrate,
+    emptySave:            emptySave,
+    migrate:              migrate,
+    encodeBoard:          encodeBoard,
+    decodeBoard:          decodeBoard,
+    decodeBoardAny:       decodeBoardAny,
+    isEncodedBoard:       isEncodedBoard,
+    boardIsEmpty:         boardIsEmpty,
+    oldestBoardKey:       oldestBoardKey,
+    capUnfinishedBoards:  capUnfinishedBoards,
+    payloadSize:          payloadSize,
+    enforceSizeGuard:     enforceSizeGuard,
+    MAX_UNFINISHED_BOARDS: MAX_UNFINISHED_BOARDS,
+    SAVE_SIZE_GUARD_BYTES: SAVE_SIZE_GUARD_BYTES,
   };
 });

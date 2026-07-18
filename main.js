@@ -101,7 +101,6 @@ document.addEventListener('DOMContentLoaded', function () {
     Platform.load().then(function (data) {
       // Миграция/нормализация сейва живёт в save.js — main.js только раскладывает
       // результат по переменным состояния (см. migrate() для деталей формата v1).
-      var wasOldFormat = !!(data && !data.completedLevels && typeof data.levelIndex === 'number');
       var migrated = Save.migrate(data, LEVELS.length);
 
       _completedLevels = migrated.completedLevels;
@@ -137,8 +136,9 @@ document.addEventListener('DOMContentLoaded', function () {
       Platform.ready();
 
       // Сейв пишется целиком со всеми полями (правило студии) — сразу фиксируем
-      // новую структуру, чтобы старый формат не остался висеть в хранилище.
-      if (wasOldFormat) saveProgress();
+      // результат migrate() (миграция v1 и/или тихая подчистка призрачных
+      // пустых досок), чтобы он не остался только в памяти до следующего хода.
+      saveProgress();
 
       document.addEventListener('visibilitychange', function () {
         if (document.visibilityState !== 'hidden') return;
@@ -151,7 +151,7 @@ document.addEventListener('DOMContentLoaded', function () {
   /* ---- Сохранение (всегда все поля целиком) ---- */
 
   function saveProgress() {
-    Platform.save({
+    var payload = {
       completedLevels: _completedLevels,
       lastLevelIndex:  _lastLevelIndex,
       onboardingSeen:  _onboardingSeen,
@@ -162,7 +162,12 @@ document.addEventListener('DOMContentLoaded', function () {
       dailyDays:       _dailyDays,
       dailyBoard:      _dailyBoard,
       dailyBoardDate:  _dailyBoardDate,
-    });
+    };
+    // Сторож размера — перед КАЖДОЙ записью: если сериализованный сейв
+    // больше лимита, выбрасывает самые старые недорешённые доски кампании,
+    // пока не влезет (или пока не кончатся).
+    Save.enforceSizeGuard(payload, Save.SAVE_SIZE_GUARD_BYTES);
+    Platform.save(payload);
   }
 
   /* ---- Ежедневный режим: дата → индекс ---- */
@@ -212,21 +217,45 @@ document.addEventListener('DOMContentLoaded', function () {
     return 1;                                          // пропуск → сброс, новая серия
   }
 
+  // true, если доска не содержит ни одной значимой отметки (закраски или
+  // крестика) — такую доску незачем писать в сейв (фикс призрачных записей).
+  function boardHasMarks(board) {
+    for (var r = 0; r < board.length; r++) {
+      for (var c = 0; c < board[r].length; c++) {
+        if (board[r][c]) return true;
+      }
+    }
+    return false;
+  }
+
+  // Пишет доску уровня в сейв, только если на ней есть хоть одна отметка —
+  // компактно (Save.encodeBoard: RLE вместо массива массивов), с отметкой
+  // времени для вытеснения самых старых. Если доска опустела (игрок сам
+  // всё стёр) и старая запись была — убираем её.
+  function persistBoardState(levelIndex) {
+    var board = Nonogram.getBoardState();
+    if (boardHasMarks(board)) {
+      _boardStates[levelIndex] = Save.encodeBoard(board, Date.now());
+      saveProgress();
+    } else if (_boardStates[levelIndex]) {
+      delete _boardStates[levelIndex];
+      saveProgress();
+    }
+  }
+
   // Дебаунс 5 с после хода (лимит SDK 100 req/5 min)
   function scheduleBoardSave(levelIndex) {
     if (_saveTimer) clearTimeout(_saveTimer);
     _saveTimer = setTimeout(function () {
       _saveTimer = null;
-      _boardStates[levelIndex] = Nonogram.getBoardState();
-      saveProgress();
+      persistBoardState(levelIndex);
     }, 5000);
   }
 
   // Немедленное сохранение (уход, реклама, сворачивание)
   function flushBoardSave(levelIndex) {
     if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
-    _boardStates[levelIndex] = Nonogram.getBoardState();
-    saveProgress();
+    persistBoardState(levelIndex);
   }
 
   /* ---- Хелперы категорий ---- */
@@ -438,21 +467,32 @@ document.addEventListener('DOMContentLoaded', function () {
   // Дебаунс прогресса доски daily-пазла — тот же приём, что для обычных
   // уровней (scheduleBoardSave), но ключ не levelIndex, а сегодняшняя дата,
   // чтобы при смене дня старый прогресс не подхватился по ошибке.
+  // Пишет доску daily в сейв, только если на ней есть хоть одна отметка —
+  // тот же приём, что и persistBoardState (фикс призрачных записей).
+  function persistDailyBoard() {
+    var board = Nonogram.getBoardState();
+    if (boardHasMarks(board)) {
+      _dailyBoard     = Save.encodeBoard(board); // единственная daily-доска — без seq, вытеснение тут не нужно
+      _dailyBoardDate = _todayKey();
+      saveProgress();
+    } else if (_dailyBoard) {
+      _dailyBoard     = null;
+      _dailyBoardDate = '';
+      saveProgress();
+    }
+  }
+
   function scheduleDailySave() {
     if (_dailySaveTimer) clearTimeout(_dailySaveTimer);
     _dailySaveTimer = setTimeout(function () {
       _dailySaveTimer = null;
-      _dailyBoard     = Nonogram.getBoardState();
-      _dailyBoardDate = _todayKey();
-      saveProgress();
+      persistDailyBoard();
     }, 5000);
   }
 
   function flushDailySave() {
     if (_dailySaveTimer) { clearTimeout(_dailySaveTimer); _dailySaveTimer = null; }
-    _dailyBoard     = Nonogram.getBoardState();
-    _dailyBoardDate = _todayKey();
-    saveProgress();
+    persistDailyBoard();
   }
 
   // Подтверждена очистка поля (кнопка «Да» в оверлее). Работает и для
@@ -507,7 +547,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // Прогресс восстанавливаем, только если он от СЕГОДНЯШНЕГО дня
     // (устаревший при смене дня уже сброшен при загрузке сейва).
     if (_dailyBoard && _dailyBoardDate === _todayKey()) {
-      Nonogram.restoreBoard(_dailyBoard);
+      Nonogram.restoreBoard(Save.decodeBoardAny(_dailyBoard));
     }
 
     document.getElementById('btn-back').onclick = function () {
@@ -597,7 +637,7 @@ document.addEventListener('DOMContentLoaded', function () {
     );
 
     if (_boardStates[levelIndex]) {
-      Nonogram.restoreBoard(_boardStates[levelIndex]);
+      Nonogram.restoreBoard(Save.decodeBoardAny(_boardStates[levelIndex]));
     }
 
     document.getElementById('btn-back').onclick = function () {
