@@ -357,7 +357,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
       var progEl = document.createElement('span');
       progEl.className = 'cat-progress' + (allDone ? ' is-done' : '');
-      progEl.textContent = done + ' / ' + total;
+      progEl.textContent = I18N.t('catDone').replace('{n}', done);
 
       card.appendChild(nameEl);
       card.appendChild(progEl);
@@ -601,14 +601,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
     var cat      = getCategoryOf(levelIndex);
     var posInCat = cat ? (cat.indices.indexOf(levelIndex) + 1) : (levelIndex + 1);
-    var totInCat = cat ? cat.indices.length : LEVELS.length;
 
     document.getElementById('win-overlay').hidden = true;
     document.getElementById('confetti-container').innerHTML = '';
     document.getElementById('game-level-label').textContent =
-      I18N.t('levelLabel')
-        .replace('{n}',     posInCat)
-        .replace('{total}', totInCat);
+      I18N.t('levelLabel').replace('{n}', posInCat);
     document.getElementById('btn-hint').disabled = false;
 
     // Направляющая подсказка — только на первом уровне (index 0)
