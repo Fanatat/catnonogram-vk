@@ -14,6 +14,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
   Sound.init();
 
+  // Задача F: подпись версии/билда (build.js — единственный источник истины,
+  // руками строку тут не набирать).
+  var buildTagEl = document.getElementById('build-tag');
+  if (buildTagEl && window.BUILD_VERSION) buildTagEl.textContent = window.BUILD_VERSION;
+
   /* ---- Категории сложности ---- */
 
   var CATEGORIES = [
@@ -22,7 +27,18 @@ document.addEventListener('DOMContentLoaded', function () {
     { key: 'catMedium',   indices: [11, 12, 13, 14, 17, 18, 19] },           // 7×7 + 10×10
     { key: 'catHard',     indices: [15, 16, 20, 21, 22, 23, 24, 25, 26,     // 8×8 + 12×12 + 15×15
                                      27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37] }, // долив п.2.9: 13×13 + 14×14 + 15×15
+    // Задача K: перенесённые из daily-пула 92 уровня (10×10/12×12),
+    // отдельной категорией — не смешиваем с catHard, чтобы не «занижать»
+    // сложность после 15×15 в конце старой кампании. Индексы 38-129
+    // (id 39-130 в levels.js), отсортированы по возрастанию площади/плотности.
+    { key: 'catLibrary',  indices: _range(38, 129) },
   ];
+
+  function _range(from, to) {
+    var arr = [];
+    for (var i = from; i <= to; i++) arr.push(i);
+    return arr;
+  }
 
   /* ---- Состояние ---- */
 
@@ -40,6 +56,25 @@ document.addEventListener('DOMContentLoaded', function () {
   var _dailyBoardDate  = '';   // 'YYYY-M-D', которой принадлежит _dailyBoard
   var _dailySaveTimer  = null;
   var _inDailyGame     = false; // сейчас открыт экран daily-пазла (для флаша при сворачивании)
+  var _cosmeticsOwned  = {};  // { productId: true } — куплено навсегда (Задача E)
+  var _activeCosmetic  = '';  // id включённой косметики либо '' (дефолтная тема)
+
+  // Задача I: реестр гамм. themeClass='' — базовая бесплатная тема (текущая
+  // тёплая бумага), её applyCosmetic просто снимает все остальные классы.
+  // swatchBg/swatchInk — превью-цвета КАРТОЧКИ в магазине (не var(--…),
+  // чтобы плитка была видна независимо от активной темы, как и раньше в E).
+  var COSMETICS = [
+    { id: '',                 themeClass: '',               nameKey: 'cosmeticDefaultName',
+      free: true,  swatchBg: '#f3ead6', swatchInk: '#2b2723' },
+    { id: 'cosmetic_ink_blue', themeClass: 'theme-ink-blue', nameKey: 'cosmeticInkBlueName',
+      free: false, swatchBg: '#f3ead6', swatchInk: '#1f2d4a' },
+    { id: 'cosmetic_sepia',    themeClass: 'theme-sepia',    nameKey: 'cosmeticSepiaName',
+      free: false, swatchBg: '#ece0c8', swatchInk: '#4a3728' },
+    { id: 'cosmetic_graphite', themeClass: 'theme-graphite', nameKey: 'cosmeticGraphiteName',
+      free: false, swatchBg: '#e9e7e2', swatchInk: '#2e2e30' },
+  ];
+  var COSMETIC_UNLOCK_LEVELS  = 3; // разблокировка МАГАЗИНА после N пройденных уровней
+  var SAVE_SIZE_GUARD_BYTES   = 150000; // 75% от лимита Яндекса 200КБ (сверено с доками)
 
   /* ---- Звук ---- */
 
@@ -112,6 +147,9 @@ document.addEventListener('DOMContentLoaded', function () {
       _streak          = migrated.streak;
       _dailyBoard      = migrated.dailyBoard;
       _dailyBoardDate  = migrated.dailyBoardDate;
+      _cosmeticsOwned  = migrated.cosmeticsOwned;
+      _activeCosmetic  = migrated.activeCosmetic;
+      applyCosmetic(_activeCosmetic);
 
       // Восстанавливаем только дни текущего локального месяца
       var _nowLoad = Platform.now();
@@ -134,6 +172,7 @@ document.addEventListener('DOMContentLoaded', function () {
       updateSoundBtns();
       showMenu();
       Platform.ready();
+      restorePurchases();
 
       // Сейв пишется целиком со всеми полями (правило студии) — сразу фиксируем
       // результат migrate() (миграция v1 и/или тихая подчистка призрачных
@@ -162,12 +201,12 @@ document.addEventListener('DOMContentLoaded', function () {
       dailyDays:       _dailyDays,
       dailyBoard:      _dailyBoard,
       dailyBoardDate:  _dailyBoardDate,
+      cosmeticsOwned:  _cosmeticsOwned,
+      activeCosmetic:  _activeCosmetic,
     };
-    // Сторож размера — перед КАЖДОЙ записью: если сериализованный сейв
-    // больше лимита, выбрасывает самые старые недорешённые доски кампании,
-    // пока не влезет (или пока не кончатся).
-    Save.enforceSizeGuard(payload, Save.SAVE_SIZE_GUARD_BYTES);
-    Platform.save(payload);
+    // Сторож байтов (ЖЁСТКОЕ ОГРАНИЧЕНИЕ задания): при риске переполнения
+    // лимита Яндекса (200КБ/игрока) вытесняет boardStates, никогда прогресс.
+    Platform.save(Save.enforceSizeGuard(payload, SAVE_SIZE_GUARD_BYTES));
   }
 
   /* ---- Ежедневный режим: дата → индекс ---- */
@@ -185,14 +224,26 @@ document.addEventListener('DOMContentLoaded', function () {
     return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
   }
 
+  // Задача K: пул daily сужен до первых DAILY_POOL_SIZE записей (30-92
+  // перенесены в кампанию, см. LEVELS). DAILY_LEVELS остаётся 122 записи
+  // как есть — физически ничего не удаляем (иначе схлопнется индексация
+  // хвоста). DAILY_POOL_CUTOVER — дата этого изменения: ДЛЯ ДАТ ДО и
+  // ВКЛЮЧАЯ неё формула БУКВАЛЬНО та же, что была (mod DAILY_LEVELS.length) —
+  // иначе индекс «сегодня»/«вчера» у уже игравших сдвинется на другой пазл
+  // задним числом (шрам стандарта студии про перетасовку daily-пула).
+  // Только ПОСЛЕ cutover цикл идёт по укороченному пулу, начиная с 0.
+  var DAILY_POOL_SIZE    = 30;
+  var DAILY_POOL_CUTOVER = '2026-7-25';
+
   function _dailyIndex() {
-    // Номер календарного дня от фиксированной эпохи — чистая функция
-    // ДАТЫ (не «прошедших миллисекунд»), поэтому не плывёт на переходах
-    // летнего времени и одинакова у всех игроков в один и тот же
-    // локальный календарный день. Пул зациклен: как только пройдены все
-    // DAILY_LEVELS.length дней, номер дня начинает повторяться с начала.
-    var days = Math.round((_dayAnchor(_todayKey()) - _dayAnchor('2024-1-1')) / 86400000);
-    return ((days % DAILY_LEVELS.length) + DAILY_LEVELS.length) % DAILY_LEVELS.length;
+    var days        = Math.round((_dayAnchor(_todayKey())        - _dayAnchor('2024-1-1')) / 86400000);
+    var cutoverDays = Math.round((_dayAnchor(DAILY_POOL_CUTOVER) - _dayAnchor('2024-1-1')) / 86400000);
+
+    if (days <= cutoverDays) {
+      return ((days % DAILY_LEVELS.length) + DAILY_LEVELS.length) % DAILY_LEVELS.length;
+    }
+    var since = days - cutoverDays - 1;
+    return ((since % DAILY_POOL_SIZE) + DAILY_POOL_SIZE) % DAILY_POOL_SIZE;
   }
 
   // 'YYYY-M-D' → мс некоторого фиксированного (но произвольного) момента,
@@ -256,6 +307,34 @@ document.addEventListener('DOMContentLoaded', function () {
   function flushBoardSave(levelIndex) {
     if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
     persistBoardState(levelIndex);
+  }
+
+  /* ---- Гарантированный interstitial (Задача D) ---- */
+  // Не полагаемся на скрытый частотный лимит SDK — считаем сами: пробуем
+  // показать каждый 2-й пройденный уровень (кампания и ежедневный вместе),
+  // и не чаще, чем раз в 75 с реального времени (требование: кулдаун 60-90с,
+  // 75с — середина диапазона). На время показа звук и игра на паузе.
+  var INTERSTITIAL_LEVEL_INTERVAL = 2;
+  var INTERSTITIAL_COOLDOWN_MS    = 75000;
+  var _levelsSinceInterstitial    = 0;
+  var _lastInterstitialAt         = 0;
+
+  function maybeShowInterstitial(onDone) {
+    _levelsSinceInterstitial++;
+    var due = _levelsSinceInterstitial >= INTERSTITIAL_LEVEL_INTERVAL &&
+      (Date.now() - _lastInterstitialAt) >= INTERSTITIAL_COOLDOWN_MS;
+
+    if (!due) { onDone(); return; }
+
+    _levelsSinceInterstitial = 0;
+    _lastInterstitialAt      = Date.now();
+    Sound.suspend();
+    Nonogram.setPaused(true);
+    Platform.showInterstitial(function () {
+      Nonogram.setPaused(false);
+      Sound.resume();
+      onDone();
+    });
   }
 
   /* ---- Хелперы категорий ---- */
@@ -331,6 +410,185 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('btn-calendar').onclick = function () {
       showCalendar();
     };
+
+    document.getElementById('btn-shop').onclick = function () {
+      Sound.resumeContext();
+      showShop();
+    };
+  }
+
+  /* ---- Косметика (Задача E — каркас, Задача I — несколько гамм) ---- */
+
+  // Снимает/ставит CSS-класс темы напрямую — общий низкоуровневый шаг и
+  // для применения купленной гаммы, и для временного «примерить».
+  function applyThemeClass(themeClass) {
+    COSMETICS.forEach(function (cos) {
+      if (cos.themeClass) document.documentElement.classList.toggle(cos.themeClass, cos.themeClass === themeClass);
+    });
+  }
+
+  function applyCosmetic(id) {
+    var cos = null;
+    for (var i = 0; i < COSMETICS.length; i++) {
+      if (COSMETICS[i].id === id) { cos = COSMETICS[i]; break; }
+    }
+    applyThemeClass(cos ? cos.themeClass : '');
+  }
+
+  // Восстановление покупок (переустановка/новое устройство): getPurchases()
+  // отдаёт то, что уже оплачено, но могло не попасть в сейв (сбой сети между
+  // purchase() и consumePurchase()). Поле с id товара — ИМЕННО productID,
+  // не id (сверено с докой Yandex Games SDK, sdk-purchases, 25.07.2026;
+  // getCatalog() использует id — это разные структуры, не перепутать).
+  function restorePurchases() {
+    Platform.getPurchases().then(function (purchases) {
+      if (!purchases || !purchases.length) return;
+      var changed = false;
+      purchases.forEach(function (p) {
+        var known = false;
+        for (var i = 0; i < COSMETICS.length; i++) {
+          if (COSMETICS[i].id === p.productID) { known = true; break; }
+        }
+        if (!known) return;
+        if (!_cosmeticsOwned[p.productID]) { _cosmeticsOwned[p.productID] = true; changed = true; }
+        if (p.purchaseToken) Platform.consumePurchase(p.purchaseToken);
+      });
+      if (changed) saveProgress();
+    });
+  }
+
+  function buildShopItemRow(cos, catalogMap) {
+    var owned   = cos.free || !!_cosmeticsOwned[cos.id];
+    var applied = (_activeCosmetic === cos.id);
+
+    var row = document.createElement('div');
+    row.className = 'shop-item';
+
+    var swatch = document.createElement('div');
+    swatch.className = 'shop-swatch';
+    swatch.style.background = cos.swatchBg;
+    swatch.setAttribute('aria-hidden', 'true');
+    var swatchInk = document.createElement('div');
+    swatchInk.className = 'shop-swatch-ink';
+    swatchInk.style.background = cos.swatchInk;
+    swatch.appendChild(swatchInk);
+
+    var body = document.createElement('div');
+    body.className = 'shop-item-body';
+    var nameEl = document.createElement('p');
+    nameEl.className = 'shop-item-name';
+    nameEl.textContent = I18N.t(cos.nameKey);
+    var statusEl = document.createElement('p');
+    statusEl.className = 'shop-item-status';
+    body.appendChild(nameEl);
+    body.appendChild(statusEl);
+
+    var actions = document.createElement('div');
+    actions.className = 'shop-item-actions';
+
+    // «Примерить до покупки» — временная смена темы, не трогает _activeCosmetic
+    // и не сохраняется; сбрасывается при выходе с экрана (см. btn-back-shop).
+    var previewBtn = document.createElement('button');
+    previewBtn.className = 'btn btn-secondary';
+    previewBtn.textContent = I18N.t('shopPreview');
+    previewBtn.onclick = function () { applyThemeClass(cos.themeClass); };
+    actions.appendChild(previewBtn);
+
+    var mainBtn = document.createElement('button');
+    mainBtn.className = 'btn btn-primary';
+
+    if (owned) {
+      statusEl.textContent = cos.free ? I18N.t('shopDefault') : I18N.t('shopOwned');
+      mainBtn.textContent  = I18N.t(applied ? 'shopRemove' : 'shopApply');
+      mainBtn.disabled = false;
+      mainBtn.onclick = function () {
+        _activeCosmetic = applied ? '' : cos.id;
+        applyCosmetic(_activeCosmetic);
+        saveProgress();
+        showShop(); // перерисовать метки кнопок под новое состояние
+      };
+    } else if (!catalogMap) {
+      // Каталог ещё не пришёл — не крашим, просто ждём (см. showShop).
+      statusEl.textContent = I18N.t('shopLoading');
+      mainBtn.textContent  = I18N.t('shopBuy');
+      mainBtn.disabled = true;
+    } else {
+      // Разблокировано, не куплено, каталог пришёл. Код читает каталог
+      // рантайм: товара нет в кабинете (или каталог пуст/недоступен) —
+      // «скоро», без краша (то же поведение, что было в E).
+      var product = catalogMap[cos.id];
+      if (!product) {
+        statusEl.textContent = I18N.t('shopUnavailable');
+        mainBtn.textContent  = I18N.t('shopBuy');
+        mainBtn.disabled = true;
+      } else {
+        // Цена цифрами + портальная валюта (п.1.13.4) — product.price уже
+        // приходит в таком виде из getCatalog() (сверено с докой).
+        statusEl.textContent = '';
+        mainBtn.textContent = I18N.t('shopBuy') + ' — ' + product.price;
+        mainBtn.disabled = false;
+        mainBtn.onclick = function () {
+          mainBtn.disabled = true;
+          Platform.purchase(cos.id).then(function (result) {
+            if (!result) {
+              mainBtn.disabled = false; // отмена/ошибка — даём попробовать ещё раз
+              return;
+            }
+            _cosmeticsOwned[cos.id] = true;
+            _activeCosmetic = cos.id;
+            applyCosmetic(_activeCosmetic);
+            saveProgress();
+            if (result.purchaseToken) Platform.consumePurchase(result.purchaseToken);
+            showShop();
+          });
+        };
+      }
+    }
+
+    actions.appendChild(mainBtn);
+    row.appendChild(swatch);
+    row.appendChild(body);
+    row.appendChild(actions);
+    return row;
+  }
+
+  function showShop() {
+    showScreen('shop');
+
+    document.getElementById('btn-back-shop').onclick = function () {
+      applyCosmetic(_activeCosmetic); // сброс временной примерки при выходе
+      showMenu();
+    };
+
+    var doneCount = Object.keys(_completedLevels).length;
+    var unlocked  = doneCount >= COSMETIC_UNLOCK_LEVELS;
+    var lockedEl  = document.getElementById('shop-locked-status');
+    var listEl    = document.getElementById('shop-list');
+
+    if (!unlocked) {
+      lockedEl.hidden = false;
+      lockedEl.textContent = I18N.t('shopLocked')
+        .replace('{done}', doneCount)
+        .replace('{need}', COSMETIC_UNLOCK_LEVELS);
+      listEl.innerHTML = '';
+      return;
+    }
+
+    lockedEl.hidden = true;
+    listEl.innerHTML = '';
+    COSMETICS.forEach(function (cos) {
+      listEl.appendChild(buildShopItemRow(cos, null)); // null = каталог ещё не пришёл
+    });
+
+    Platform.getCatalog().then(function (catalog) {
+      if (!document.getElementById('shop').classList.contains('is-active')) return; // экран уже закрыт
+      var catalogMap = {};
+      catalog.forEach(function (p) { catalogMap[p.id] = p; });
+      listEl.innerHTML = '';
+      COSMETICS.forEach(function (cos) {
+        listEl.appendChild(buildShopItemRow(cos, catalogMap));
+      });
+    });
   }
 
   /* ---- Экран выбора сложнос��и ---- */
@@ -339,6 +597,8 @@ document.addEventListener('DOMContentLoaded', function () {
     showScreen('category');
     document.querySelector('#category [data-i18n="chooseLevel"]').textContent =
       I18N.t('chooseLevel');
+    document.getElementById('category-total').textContent =
+      I18N.t('levelsAvailable');
 
     var list = document.getElementById('category-list');
     list.innerHTML = '';
@@ -357,7 +617,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
       var progEl = document.createElement('span');
       progEl.className = 'cat-progress' + (allDone ? ' is-done' : '');
-      progEl.textContent = I18N.t('catDone').replace('{n}', done);
+      progEl.textContent = allDone
+        ? I18N.t('catProgressAllDone')
+        : (done > 0 ? I18N.t('catProgressDone').replace('{n}', done) : I18N.t('catProgressNone'));
 
       card.appendChild(nameEl);
       card.appendChild(progEl);
@@ -541,7 +803,8 @@ document.addEventListener('DOMContentLoaded', function () {
       level,
       document.getElementById('puzzle-container'),
       function () { onDailyWin(level); },
-      function ()  { scheduleDailySave(); }
+      function ()  { Sound.tick(); scheduleDailySave(); },
+      function ()  { Sound.lineClosed(); }
     );
 
     // Прогресс восстанавливаем, только если он от СЕГОДНЯШНЕГО дня
@@ -581,11 +844,7 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('btn-next-level').onclick = function () {
       _currentLevel = -1;
       _inDailyGame  = false;
-      Sound.suspend();
-      Platform.showInterstitial(function () {
-        Sound.resume();
-        showMenu();
-      });
+      maybeShowInterstitial(showMenu);
     };
   }
 
@@ -599,13 +858,12 @@ document.addEventListener('DOMContentLoaded', function () {
     _lastLevelIndex = levelIndex;  // всегда обновляем для «Продолжить»
     _inDailyGame    = false;
 
-    var cat      = getCategoryOf(levelIndex);
-    var posInCat = cat ? (cat.indices.indexOf(levelIndex) + 1) : (levelIndex + 1);
-
     document.getElementById('win-overlay').hidden = true;
     document.getElementById('confetti-container').innerHTML = '';
-    document.getElementById('game-level-label').textContent =
-      I18N.t('levelLabel').replace('{n}', posInCat);
+    // #game-level-label используется и здесь, и в showDailyGame() — для
+    // кампании он пуст (номер/общее число уровня на экране решения не
+    // показываются, см. showCategory для сводки доступных уровней).
+    document.getElementById('game-level-label').textContent = '';
     document.getElementById('btn-hint').disabled = false;
 
     // Направляющая подсказка — только на первом уровне (index 0)
@@ -630,7 +888,8 @@ document.addEventListener('DOMContentLoaded', function () {
       level,
       document.getElementById('puzzle-container'),
       function () { onWin(level, levelIndex); },
-      function ()  { scheduleBoardSave(levelIndex); }
+      function ()  { Sound.tick(); scheduleBoardSave(levelIndex); },
+      function ()  { Sound.lineClosed(); }
     );
 
     if (_boardStates[levelIndex]) {
@@ -676,9 +935,7 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('btn-next-level').textContent = I18N.t('next');
     document.getElementById('btn-next-level').onclick = function () {
       _currentLevel = -1;
-      Sound.suspend();
-      Platform.showInterstitial(function () {
-        Sound.resume();
+      maybeShowInterstitial(function () {
         if (nextIndex >= 0) {
           showGame(nextIndex);
         } else {
@@ -718,7 +975,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
   /* ---- Силуэт ---- */
 
+  // Задача G: картинка «проявляется» из клеток — juice-момент экрана
+  // победы ТЕКУЩЕГО уровня, не путать с финалом кампании (не трогаем).
+  var _silhouetteRAF = null;
+
   function buildSilhouette(level) {
+    if (_silhouetteRAF) { cancelAnimationFrame(_silhouetteRAF); _silhouetteRAF = null; }
+
     var W = level.width, H = level.height;
     var CELL = Math.min(48, Math.floor(260 / Math.max(W, H)));
     var canvas = document.getElementById('win-canvas');
@@ -726,16 +989,47 @@ document.addEventListener('DOMContentLoaded', function () {
     canvas.height = H * CELL;
     var ctx = canvas.getContext('2d');
     var style = getComputedStyle(document.documentElement);
-    ctx.fillStyle = style.getPropertyValue('--bg').trim()  || '#f3ead6';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = style.getPropertyValue('--ink').trim() || '#2b2723';
+    var bg  = style.getPropertyValue('--bg').trim()  || '#f3ead6';
+    var ink = style.getPropertyValue('--ink').trim() || '#2b2723';
+
+    var cells = [];
     for (var r = 0; r < H; r++) {
       for (var c = 0; c < W; c++) {
-        if (level.solution[r][c]) {
-          ctx.fillRect(c * CELL + 1, r * CELL + 1, CELL - 2, CELL - 2);
-        }
+        if (level.solution[r][c]) cells.push({ r: r, c: c });
       }
     }
+
+    function paint(count) {
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = ink;
+      for (var i = 0; i < count; i++) {
+        ctx.fillRect(cells[i].c * CELL + 1, cells[i].r * CELL + 1, CELL - 2, CELL - 2);
+      }
+    }
+
+    var reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduceMotion || cells.length === 0) { paint(cells.length); return; }
+
+    // Случайный порядок — читается как "проявление", а не построчная отрисовка.
+    for (var i = cells.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = cells[i]; cells[i] = cells[j]; cells[j] = tmp;
+    }
+
+    var DURATION = 500;
+    var start = null;
+    function step(ts) {
+      if (!start) start = ts;
+      var progress = Math.min(1, (ts - start) / DURATION);
+      paint(Math.ceil(progress * cells.length));
+      if (progress < 1) {
+        _silhouetteRAF = requestAnimationFrame(step);
+      } else {
+        _silhouetteRAF = null;
+      }
+    }
+    _silhouetteRAF = requestAnimationFrame(step);
   }
 
   /* ---- Конфетти ---- */

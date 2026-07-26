@@ -122,24 +122,6 @@
     return boardStates;
   }
 
-  function payloadSize(payload) {
-    return new Blob([JSON.stringify(payload)]).size;
-  }
-
-  // Сторож перед записью (п.3в): пока сериализованный payload больше
-  // limitBytes — выбрасывает САМУЮ СТАРУЮ недорешённую доску кампании.
-  // Останавливается, когда boardStates опустел (дальше выбрасывать нечего —
-  // остальные поля сейва сторож не трогает). Мутирует payload.boardStates.
-  function enforceSizeGuard(payload, limitBytes) {
-    capUnfinishedBoards(payload.boardStates, MAX_UNFINISHED_BOARDS);
-    while (payloadSize(payload) > limitBytes) {
-      var oldest = oldestBoardKey(payload.boardStates);
-      if (oldest == null) break;
-      delete payload.boardStates[oldest];
-    }
-    return payload;
-  }
-
   function emptySave() {
     return {
       completedLevels: {},
@@ -152,7 +134,32 @@
       dailyDays:       {},
       dailyBoard:      null,   // прогресс ТЕКУЩЕГО дня (доска) — см. dailyBoardDate
       dailyBoardDate:  '',     // 'YYYY-M-D' (локальная дата), которой принадлежит dailyBoard
+      cosmeticsOwned:  {},     // { productId: true } — куплено НАВСЕГДА (Задача E)
+      activeCosmetic:  '',     // id включённой косметики либо '' (дефолтная тема)
     };
+  }
+
+  // Размер сериализованного сейва в байтах (как реально уйдёт в setData).
+  function payloadSize(payload) {
+    return new Blob([JSON.stringify(payload)]).size;
+  }
+
+  // Сторож перед записью: лимит Яндекса на игрока — 200КБ (сверено с
+  // документацией SDK, 24.07.2026). Вызывающий передаёт limitBytes с
+  // запасом (main.js берёт 150000 — 75% от лимита). Сначала обрезает
+  // до MAX_UNFINISHED_BOARDS (п.3б), затем, пока сериализованный payload
+  // всё ещё больше limitBytes, выбрасывает САМУЮ СТАРУЮ (по seq)
+  // недорешённую доску кампании — НИКОГДА не completedLevels/cosmeticsOwned
+  // и прочий прогресс. Останавливается, когда boardStates опустел.
+  // Мутирует payload.boardStates.
+  function enforceSizeGuard(payload, limitBytes) {
+    capUnfinishedBoards(payload.boardStates, MAX_UNFINISHED_BOARDS);
+    while (payloadSize(payload) > limitBytes) {
+      var oldest = oldestBoardKey(payload.boardStates);
+      if (oldest == null) break;
+      delete payload.boardStates[oldest];
+    }
+    return payload;
   }
 
   // Переводит сейв v1 (плоский levelIndex) либо уже-новый сейв в
@@ -185,6 +192,8 @@
     out.dailyDays      = (oldSave.dailyDays && typeof oldSave.dailyDays === 'object') ? oldSave.dailyDays : {};
     var rawDailyBoard  = (oldSave.dailyBoard && typeof oldSave.dailyBoard === 'object') ? oldSave.dailyBoard : null;
     out.dailyBoardDate = (typeof oldSave.dailyBoardDate === 'string') ? oldSave.dailyBoardDate : '';
+    out.cosmeticsOwned = (oldSave.cosmeticsOwned && typeof oldSave.cosmeticsOwned === 'object') ? oldSave.cosmeticsOwned : {};
+    out.activeCosmetic = (typeof oldSave.activeCosmetic === 'string') ? oldSave.activeCosmetic : '';
 
     // Подчистка «призрачных» пустых досок — старые сейвы могли записать
     // недорешённую доску, которую потом стёрли до нуля (см. фикс в main.js:
@@ -214,17 +223,17 @@
   }
 
   return {
-    emptySave:            emptySave,
-    migrate:              migrate,
-    encodeBoard:          encodeBoard,
-    decodeBoard:          decodeBoard,
-    decodeBoardAny:       decodeBoardAny,
-    isEncodedBoard:       isEncodedBoard,
-    boardIsEmpty:         boardIsEmpty,
-    oldestBoardKey:       oldestBoardKey,
-    capUnfinishedBoards:  capUnfinishedBoards,
-    payloadSize:          payloadSize,
-    enforceSizeGuard:     enforceSizeGuard,
+    emptySave:             emptySave,
+    migrate:               migrate,
+    encodeBoard:           encodeBoard,
+    decodeBoard:           decodeBoard,
+    decodeBoardAny:        decodeBoardAny,
+    isEncodedBoard:        isEncodedBoard,
+    boardIsEmpty:          boardIsEmpty,
+    oldestBoardKey:        oldestBoardKey,
+    capUnfinishedBoards:   capUnfinishedBoards,
+    payloadSize:           payloadSize,
+    enforceSizeGuard:      enforceSizeGuard,
     MAX_UNFINISHED_BOARDS: MAX_UNFINISHED_BOARDS,
     SAVE_SIZE_GUARD_BYTES: SAVE_SIZE_GUARD_BYTES,
   };

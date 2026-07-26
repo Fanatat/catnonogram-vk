@@ -14,6 +14,7 @@ window.Nonogram = (function () {
   var _lastCell   = null;
   var _onWin      = null;
   var _onMove     = null;    // колбэк main.js для дебаунс-сейва
+  var _onLineClosed = null;  // колбэк main.js (Задача H: звук «ряд закрыт»)
   var _won        = false;
   var _paused     = false;   // true во время рекламы — блокирует ввод
   var _strokeSnapshot = null; // снимок доски в начале штриха для отмены при pinch
@@ -322,6 +323,65 @@ window.Nonogram = (function () {
   }
 
   /* ----------------------------------------------------------
+     Задача G — угасание подсказок закрытой строки/столбца.
+     «Закрыта» = закрашенные клетки (крестики как пустые) точно
+     совпадают с решением на всей линии — тот же критерий, что и
+     checkWin, но для одной линии. Прогресс без цифр (п.G) — просто
+     opacity, никаких счётчиков.
+  ---------------------------------------------------------- */
+  function isRowClosed(r) {
+    var row = _boardState[r], sol = _level.solution[r];
+    for (var c = 0; c < row.length; c++) {
+      if ((row[c] === 1 ? 1 : 0) !== sol[c]) return false;
+    }
+    return true;
+  }
+
+  function isColClosed(c) {
+    var H = _level.height;
+    for (var r = 0; r < H; r++) {
+      if ((_boardState[r][c] === 1 ? 1 : 0) !== _level.solution[r][c]) return false;
+    }
+    return true;
+  }
+
+  // silent=true — используется при массовом пересчёте (restore/clear/undo),
+  // чтобы звук «ряд закрыт» не играл за уже существующий прогресс.
+  function updateRowClueFade(r, silent) {
+    var el = document.querySelector('.row-clue[data-row="' + r + '"]');
+    if (!el) return;
+    var wasClosed = el.classList.contains('is-closed');
+    var closed = isRowClosed(r);
+    el.classList.toggle('is-closed', closed);
+    if (!silent && closed && !wasClosed && _onLineClosed) _onLineClosed();
+  }
+
+  function updateColClueFade(c, silent) {
+    var el = document.querySelector('.col-clue[data-col="' + c + '"]');
+    if (!el) return;
+    var wasClosed = el.classList.contains('is-closed');
+    var closed = isColClosed(c);
+    el.classList.toggle('is-closed', closed);
+    if (!silent && closed && !wasClosed && _onLineClosed) _onLineClosed();
+  }
+
+  // Точечное обновление одной строки/столбца — вызывается на каждый ход.
+  function updateClueFade(r, c) {
+    if (!_level) return;
+    updateRowClueFade(r, false);
+    updateColClueFade(c, false);
+  }
+
+  // Полный пересчёт — после массовых операций (сброс поля, восстановление
+  // сохранённой доски, откат штриха), где задета не одна r/c-пара.
+  function refreshAllClueFade() {
+    if (!_level) return;
+    var H = _level.height, W = _level.width;
+    for (var r = 0; r < H; r++) updateRowClueFade(r, true);
+    for (var c = 0; c < W; c++) updateColClueFade(c, true);
+  }
+
+  /* ----------------------------------------------------------
      Ввод: тап и кисть-протяжка
      applyToCell возвращает true, если изменилось состояние
      заливки (0↔1) — только тогда проверяем победу.
@@ -379,6 +439,7 @@ window.Nonogram = (function () {
       }
     }
     _strokeSnapshot = null;
+    refreshAllClueFade();
   }
 
   /* ----------------------------------------------------------
@@ -512,6 +573,7 @@ window.Nonogram = (function () {
     // иначе тот же ошибочный расклад мгновенно ставит снятый крестик обратно
     // в рамках того же тапа, и игрок физически не может его убрать.
     if (_dragAction === 'set') autoFillCrosses(cell.r, cell.c);
+    updateClueFade(cell.r, cell.c);
     if (changed) tryWin();
 
     window.addEventListener('pointermove',   onPointerMove);
@@ -527,6 +589,7 @@ window.Nonogram = (function () {
     _lastCell = { r: cell.r, c: cell.c };
     var changed = applyToCell(cell.r, cell.c);
     if (_dragAction === 'set') autoFillCrosses(cell.r, cell.c); // см. onPointerDown
+    updateClueFade(cell.r, cell.c);
     if (changed) tryWin();
   }
 
@@ -545,13 +608,14 @@ window.Nonogram = (function () {
   /* ----------------------------------------------------------
      render(level, container, onWin)
   ---------------------------------------------------------- */
-  function render(level, container, onWin, onMove) {
+  function render(level, container, onWin, onMove, onLineClosed) {
     detachZoomHandlers(_container);
     _level     = level;
     _container = container; // нужен computeBaseCell() ниже; attachZoomHandlers переустановит тем же значением
     _clues  = calcClues(level.solution);
     _onWin  = onWin  || null;
     _onMove = onMove || null;
+    _onLineClosed = onLineClosed || null;
     _won    = false;
     _mode   = 1;
     _isDragging = false; _dragAction = null; _dragValue = 1; _lastCell = null;
@@ -590,6 +654,7 @@ window.Nonogram = (function () {
     for (var c = 0; c < W; c++) {
       var ccDiv = document.createElement('div');
       ccDiv.className = 'col-clue';
+      ccDiv.dataset.col = c;
       for (var i = 0; i < clues.cols[c].length; i++) {
         var sp = document.createElement('span');
         sp.textContent = clues.cols[c][i];
@@ -604,6 +669,7 @@ window.Nonogram = (function () {
     for (var r = 0; r < H; r++) {
       var rcDiv = document.createElement('div');
       rcDiv.className = 'row-clue';
+      rcDiv.dataset.row = r;
       for (var j = 0; j < clues.rows[r].length; j++) {
         var sp2 = document.createElement('span');
         sp2.textContent = clues.rows[r][j];
@@ -681,6 +747,10 @@ window.Nonogram = (function () {
   function applyHint(hint) {
     if (!hint || _won) return;
     if (hint.action === 'clear') {
+      // Клетка была закрашена ошибочно (единственное место в свободном
+      // режиме, где мы явно знаем об ошибке) — короткий шейк, антистресс-
+      // тон, без красного (см. CSS .grid-cell.is-shake).
+      shakeCell(hint.r, hint.c);
       _boardState[hint.r][hint.c] = 2;
       renderCell(hint.r, hint.c);
     } else {
@@ -689,10 +759,20 @@ window.Nonogram = (function () {
     }
     if (_onMove) _onMove();
     autoFillCrosses(hint.r, hint.c);
+    updateClueFade(hint.r, hint.c);
     if (checkWin(_boardState, _level.solution)) {
       _won = true;
       if (_onWin) _onWin();
     }
+  }
+
+  // Таймаут, а не 'animationend' — под prefers-reduced-motion анимация не
+  // играет и событие не пришло бы, класс завис бы навсегда.
+  function shakeCell(r, c) {
+    var el = document.querySelector('.grid-cell[data-r="' + r + '"][data-c="' + c + '"]');
+    if (!el) return;
+    el.classList.add('is-shake');
+    setTimeout(function () { el.classList.remove('is-shake'); }, 150);
   }
 
   /* ----------------------------------------------------------
@@ -712,6 +792,7 @@ window.Nonogram = (function () {
         }
       }
     }
+    refreshAllClueFade();
   }
 
   function setPaused(v) { _paused = !!v; }
@@ -734,6 +815,7 @@ window.Nonogram = (function () {
         }
       }
     }
+    refreshAllClueFade();
   }
 
   return {
