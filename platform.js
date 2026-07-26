@@ -275,6 +275,22 @@ window.Platform = (function () {
       });
   }
 
+  // Покупки за голоса (ЗАДАЧА N, п. «покупки — не делать в этой задаче»):
+  // VKWebAppShowOrderBox по официальной механике требует серверный
+  // колбэк-скрипт («Адрес обратного вызова» в настройках приложения VK),
+  // которого у студии нет. Реализовывать самодельный обход — запрещено
+  // постановкой. Вместо этого — контракт остаётся полным (main.js
+  // одинаков для обеих сборок и вызывает эти методы безусловно), но
+  // всегда отвечает «ничего нет»/«отменено»: getCatalog() возвращает
+  // пустой каталог, поэтому main.js сам показывает каждый платный товар
+  // как shopUnavailable («скоро»), кнопка покупки остаётся задизейблена —
+  // это уже существующее поведение main.js, здесь ничего допиливать не
+  // пришлось.
+  function getCatalog()                { return Promise.resolve([]); }
+  function getPurchases()               { return Promise.resolve([]); }
+  function purchase(productId)          { return Promise.resolve(null); }
+  function consumePurchase(purchaseToken) { return Promise.resolve(); }
+
   return {
     init: init,
     ready: ready,
@@ -285,6 +301,10 @@ window.Platform = (function () {
     now: now,
     showInterstitial: showInterstitial,
     showRewarded: showRewarded,
+    getCatalog: getCatalog,
+    getPurchases: getPurchases,
+    purchase: purchase,
+    consumePurchase: consumePurchase,
   };
 })();
 }

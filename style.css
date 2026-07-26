@@ -6,6 +6,28 @@
   --radius:    6px;
 }
 
+/* Задача E: косметика — другой цвет чернил, фон "тёплой бумаги" не трогаем.
+   Класс вешается на <html> (main.js applyCosmetic), а не #app, — переопределяет
+   :root для ВСЕХ экранов, включая уже отрисованные до применения. */
+html.theme-ink-blue {
+  --ink:       #1f2d4a;
+  --ink-light: #55637f;
+  --accent:    #3d6b96;
+}
+/* Задача I: ещё две гаммы «тёплой бумаги» — та же схема переменных. */
+html.theme-sepia {
+  --bg:        #ece0c8;
+  --ink:       #4a3728;
+  --ink-light: #8a6f56;
+  --accent:    #a3703f;
+}
+html.theme-graphite {
+  --bg:        #e9e7e2;
+  --ink:       #2e2e30;
+  --ink-light: #6c6c70;
+  --accent:    #55606b;
+}
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body {
@@ -126,11 +148,37 @@ html, body {
   color: var(--ink-light);
 }
 
+/* Задача F: подпись версии/билда — не UI-элемент, только для основателя.
+   Вне .screen (см. index.html), поэтому видна поверх любого активного
+   экрана, включая оверлеи (z-index выше .overlay). */
+.build-tag {
+  position: absolute;
+  left: max(8px, env(safe-area-inset-left));
+  bottom: max(8px, env(safe-area-inset-bottom));
+  font-size: 0.65rem;
+  color: var(--ink-light);
+  opacity: 0.35;
+  pointer-events: none;
+  user-select: none;
+  z-index: 20;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .loader { animation: none; }
 }
 
 /* ---- Экран выбора сложности ---- */
+
+/* Задача K: 5-я карточка категории (catLibrary) больше не гарантированно
+   помещается без скролла на низких экранах (320×568 и меньше) — раньше
+   список из 4 карточек считался «коротким» (см. историю #shop). Тот же
+   приём: список сам не по центру, а сверху, с прокруткой и отступом,
+   чтобы не залезать под back-button. */
+#category {
+  justify-content: flex-start;
+  overflow-y: auto;
+  padding: 56px 0 24px;
+}
 
 .cat-back-btn {
   position: absolute;
@@ -141,8 +189,14 @@ html, body {
 .cat-screen-title {
   font-size: 1.4rem;
   font-weight: normal;
-  margin-bottom: 28px;
+  margin-bottom: 4px;
   color: var(--ink);
+}
+
+.cat-total {
+  font-size: 0.85rem;
+  color: var(--ink-light);
+  margin-bottom: 24px;
 }
 
 .category-list {
@@ -262,6 +316,11 @@ html, body {
   line-height: 1.5;
   color: var(--ink);
 }
+/* Задача G: строка/столбец закрыты — подсказка бледнеет (прогресс без цифр) */
+.col-clue.is-closed span {
+  opacity: 0.3;
+  transition: opacity 0.2s ease-out;
+}
 
 /* Подсказки строк: числа выровнены по правому краю */
 .row-clue {
@@ -275,6 +334,10 @@ html, body {
 .row-clue span {
   font-size: 13px;
   color: var(--ink);
+}
+.row-clue.is-closed span {
+  opacity: 0.3;
+  transition: opacity 0.2s ease-out;
 }
 
 /* Сетка */
@@ -303,6 +366,7 @@ html, body {
 /* Состояния клетки */
 .grid-cell.is-filled {
   background: var(--ink);
+  animation: cell-stamp 90ms ease-out;
 }
 .grid-cell.is-cross::after {
   content: '×';
@@ -310,6 +374,37 @@ html, body {
   color: var(--ink-light);
   line-height: 1;
   pointer-events: none;
+}
+.grid-cell.is-cross {
+  animation: cell-stamp 90ms ease-out;
+}
+
+/* Задача G: микро-штамп + "чернильная заливка" вместо мгновенной клетки */
+@keyframes cell-stamp {
+  from { transform: scale(0.85); opacity: 0.4; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+
+/* Задача G: ошибка, вскрытая подсказкой — короткий шейк, без красного */
+.grid-cell.is-shake {
+  animation: cell-shake 120ms ease-in-out;
+}
+@keyframes cell-shake {
+  0%, 100% { transform: translateX(0); }
+  25%      { transform: translateX(-6px); }
+  75%      { transform: translateX(6px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .grid-cell.is-filled,
+  .grid-cell.is-cross,
+  .grid-cell.is-shake {
+    animation: none;
+  }
+  .row-clue.is-closed span,
+  .col-clue.is-closed span {
+    transition: none;
+  }
 }
 
 /* ---- Подсказка на первом уровне ---- */
@@ -471,13 +566,17 @@ html, body {
    недопустимо, весь текст должен читаться целиком даже на 320px. Вместо
    обрезки — шрифт/паддинги ужимаются (clamp, привязан к ширине вьюпорта),
    а flex-wrap — аварийный запасной вариант, если сжатие всё же не
-   уместило три кнопки в одну строку. Нижний паддинг учитывает safe-area
-   (жест-навигация телефона, фикс 2). */
+   уместило три кнопки в одну строку. Левый/правый паддинг учитывает
+   safe-area (вырез/жест-навигация в альбомной ориентации).
+   Задача F: нижний край — единственный ряд кнопок, что делит угол
+   с .build-tag. Базовый запас (24px) даёт подписи не наезжать на
+   кнопку даже без safe-area (как в headless-проверке); + env() —
+   на телефонах с домашним индикатором. */
 .mode-bar {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 12px max(16px, env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  padding: 12px max(16px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   justify-content: center;
   flex-shrink: 0;
   width: 100%;
@@ -578,4 +677,81 @@ html, body {
 
 .cal-day.today.done {
   border-color: rgba(43, 39, 35, 0.35);
+}
+
+/* ---- Экран косметики (Задача E — каркас, Задача I — список гамм) ---- */
+
+/* Список из N карточек может быть выше экрана (320×568 и меньше) —
+   в отличие от короткого .category-list, здесь нужен свой скролл и
+   отступ сверху, чтобы не залезать под back-button (cat-back-btn:
+   top 12px + ~36px высоты кнопки). */
+#shop {
+  justify-content: flex-start;
+  overflow-y: auto;
+  padding: 56px 0 24px;
+}
+
+.shop-status {
+  font-size: 0.85rem;
+  color: var(--ink-light);
+  margin: 0 0 16px;
+  text-align: center;
+  width: min(280px, 85vw);
+}
+
+.shop-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(320px, 88vw);
+}
+
+.shop-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 2px solid var(--ink);
+  border-radius: var(--radius);
+}
+
+.shop-swatch {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 3px;
+  border: 1.5px solid var(--ink);
+  position: relative;
+}
+.shop-swatch-ink {
+  position: absolute;
+  inset: 8px;
+  border-radius: 2px;
+}
+
+.shop-item-body {
+  flex: 1;
+  min-width: 0;
+}
+.shop-item-name {
+  font-size: 0.95rem;
+  color: var(--ink);
+}
+.shop-item-status {
+  font-size: 0.78rem;
+  color: var(--ink-light);
+  min-height: 1.1em;
+}
+
+.shop-item-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.shop-item-actions .btn {
+  min-height: 36px; /* тап-таргет пальцем, см. ограничения студии (MIN_TILE 34-36px) */
+  padding: 6px 12px;
+  font-size: 0.8rem;
+  white-space: nowrap;
 }

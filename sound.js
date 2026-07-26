@@ -45,11 +45,22 @@ window.Sound = (function () {
 
   function found() { beep(660, 0.12, 'triangle', 0.18); }
   function wrong() { beep(150, 0.18, 'sawtooth', 0.14); }
+
+  // Задача H: восходящее мажорное арпеджио до-ми-соль-до (C5-E5-G5-C6),
+  // ОРИГИНАЛЬНАЯ попевка — не цитата известной мелодии, просто гамма
+  // трезвучия. ~1.15с целиком, кульминация держится подольше.
   function win() {
-    beep(523, 0.12, 'triangle', 0.2);
-    setTimeout(function () { beep(659, 0.12, 'triangle', 0.2); }, 120);
-    setTimeout(function () { beep(784, 0.20, 'triangle', 0.2); }, 240);
+    beep(523,  0.22, 'triangle', 0.20); // до
+    setTimeout(function () { beep(659,  0.22, 'triangle', 0.20); }, 220); // ми
+    setTimeout(function () { beep(784,  0.24, 'triangle', 0.20); }, 440); // соль
+    setTimeout(function () { beep(1047, 0.42, 'triangle', 0.22); }, 680); // до (октавой выше)
   }
+
+  // Задача H: «Ряд закрыт» — одна мягкая нота (синус, не резкая).
+  function lineClosed() { beep(587, 0.16, 'sine', 0.12); }
+
+  // Задача H: «Клетка» — короткий тик при заливке/крестике/автокрестике.
+  function tick() { beep(880, 0.035, 'sine', 0.05); }
 
   // Пауза/возврат звука (реклама, сворачивание).
   function suspend() { if (ctx && ctx.state === 'running') ctx.suspend(); }
@@ -68,6 +79,7 @@ window.Sound = (function () {
   return {
     init: init, resumeContext: resumeContext,
     found: found, wrong: wrong, win: win,
+    lineClosed: lineClosed, tick: tick,
     suspend: suspend, resume: resume,
     setMuted: setMuted, isMuted: isMuted,
   };
