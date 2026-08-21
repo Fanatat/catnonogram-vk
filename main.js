@@ -180,6 +180,11 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('dev-badge').hidden = false;
     }
 
+    // ТЗ №09, фаза 1: сти́ки-баннер — сразу после init, живёт на всех
+    // экранах (один показ на сессию, не по экрану). Только ВК —
+    // Platform.showBannerAd не существует в яндекс-сборке (platform.js).
+    if (Platform.showBannerAd) Platform.showBannerAd();
+
     Platform.load().then(function (data) {
       // Миграция/нормализация сейва живёт в save.js — main.js только раскладывает
       // результат по переменным состояния (см. migrate() для деталей формата v1).
@@ -354,6 +359,45 @@ document.addEventListener('DOMContentLoaded', function () {
     el.textContent = text;
   }
 
+  // Кнопка «Открыть ещё +N» (экран категорий) — ТЗ №09, фаза 3. Отдельный
+  // кран от такта раздатчика (см. Retention.grantDrip — не ограничен
+  // потолком накопителя, только концом кампании). Без кулдауна и гейтов
+  // частоты — rewarded показывается КАЖДЫЙ клик (стандарт 26.07: кулдауны
+  // только для непрошеной рекламы). Подпись не обещает ролик — только
+  // результат.
+  function renderRewardedButton() {
+    if (!_retentionState) return;
+    var btn = document.getElementById(RETENTION_CONFIG.domSlots.rewardedBtn);
+    if (!btn) return;
+    var fullyOpen = Retention.isCampaignFullyUnlocked(_retentionState, RETENTION_CONFIG);
+    // Простота > хитрые условия (ТЗ №09 п.3): видна всегда, пока есть что
+    // открывать — не завязана на то, доигран ли стартовый запас.
+    btn.hidden = fullyOpen;
+    if (fullyOpen) return;
+    btn.textContent = I18N.t('retentionRewardedBtn').replace('{n}', RETENTION_CONFIG.dripPerTick);
+  }
+
+  function onRewardedButtonClick() {
+    Sound.resumeContext();
+    // Реклама недоступна (adblock/нет филла) -> Platform.showRewarded зовёт
+    // onReward сразу же, бесплатно (см. adapters/vk_bridge.js) — кнопка не
+    // прячется и не блокируется на время показа (п.190, шрам Color Sort).
+    Platform.showRewarded(function onReward() {
+      var before = _retentionState.dripOpened;
+      _retentionState = Retention.grantDrip(_retentionState, RETENTION_CONFIG, RETENTION_CONFIG.dripPerTick);
+      var granted = _retentionState.dripOpened - before;
+      if (granted > 0) {
+        saveProgress();
+        showRetentionToast(granted === 1
+          ? I18N.t('retentionRewardDrip')
+          : I18N.t('retentionRewardDrip') + ' (' + granted + ')');
+      }
+    }, function onClose() {
+      renderRetentionDripLine();
+      renderRewardedButton();
+    });
+  }
+
   // Строка серии (главный экран) — п.2.3, видна ПОСТОЯННО (не hidden).
   function renderRetentionStreakLine() {
     if (!_retentionState) return;
@@ -490,10 +534,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
   /* ---- Гарантированный interstitial (Задача D) ---- */
   // Не полагаемся на скрытый частотный лимит SDK — считаем сами: пробуем
-  // показать каждый 2-й пройденный уровень (кампания и ежедневный вместе),
-  // и не чаще, чем раз в 75 с реального времени (требование: кулдаун 60-90с,
-  // 75с — середина диапазона). На время показа звук и игра на паузе.
-  var INTERSTITIAL_LEVEL_INTERVAL = 2;
+  // показать каждый 6-й пройденный уровень (кампания и ежедневный вместе;
+  // ТЗ №09 фаза 2 — было 2, реже по решению основателя), и не чаще, чем раз
+  // в 75 с реального времени (требование: кулдаун 60-90с, 75с — середина
+  // диапазона, из ТЗ №09 не менялось). На время показа звук и игра на паузе.
+  var INTERSTITIAL_LEVEL_INTERVAL = 6;
   var INTERSTITIAL_COOLDOWN_MS    = 75000;
   var _levelsSinceInterstitial    = 0;
   var _lastInterstitialAt         = 0;
@@ -817,7 +862,11 @@ document.addEventListener('DOMContentLoaded', function () {
       I18N.t('chooseLevel');
     document.getElementById('category-total').textContent =
       I18N.t('levelsAvailable');
-    if (typeof Retention !== 'undefined') renderRetentionDripLine();
+    if (typeof Retention !== 'undefined') {
+      renderRetentionDripLine();
+      renderRewardedButton();
+      document.getElementById(RETENTION_CONFIG.domSlots.rewardedBtn).onclick = onRewardedButtonClick;
+    }
 
     var list = document.getElementById('category-list');
     list.innerHTML = '';
@@ -841,24 +890,26 @@ document.addEventListener('DOMContentLoaded', function () {
       nameEl.textContent = I18N.t(cat.key);
 
       var progEl = document.createElement('span');
-      // Запрет (ТЗ №01, п.2.2): взаперти — без чисел, без «X из Y», только
-      // замок. allDone/обычный прогресс — как раньше.
+      // Запрет (ТЗ №01, п.2.2): взаперти — без «X из Y» (знаменателя, общих
+      // чисел кампании), только замок. ТЗ №09, фаза 4 — санкционированное
+      // исключение из «без чисел»: дистанция (числитель без знаменателя,
+      // «скрытое будущее») отвечает на «сколько?», а не на «сколько всего»
+      // — той же природы, что и раздатчик (ТЗ №07/№08). allDone/обычный
+      // прогресс — как раньше.
       if (locked) {
         progEl.className = 'cat-progress cat-lock-icon';
-        // ТЗ №08, фаза 3: конкретный ориентир вместо «по мере прохождения» —
-        // имя ПРЕДЫДУЩЕЙ категории (последняя ссылается на предпоследнюю),
-        // берётся из данных (CATEGORIES), не хардкодом — модуль переносится
-        // в другие игры с другим набором категорий. catIdx===0 защитно
-        // (стартовый запас гарантирует, что первая категория не запирается
-        // никогда — см. п.813) падает на общую формулировку без ссылки.
-        // «После» требует родительного падежа («после Средних», не «после
-        // Средние») — родительная форма живёт отдельным i18n-ключом
-        // (`{key}Gen`) рядом с именительной, не считается алгоритмом
-        // (общее русское словоизменение — за рамками этой правки).
-        var prevCat = catIdx > 0 ? CATEGORIES[catIdx - 1] : null;
-        progEl.textContent = '🔒 ' + (prevCat
-          ? I18N.t('catLocked').replace('{prev}', I18N.t(prevCat.key + 'Gen'))
-          : I18N.t('catLockedGeneric'));
+        // N = индекс первого уровня категории минус текущая граница
+        // открытого (Retention.dripBoundary — старт+раздатчик). Пересчитывается
+        // при каждом показе экрана (showCategory зовётся заново), поэтому
+        // уменьшается от игры, раздатчика И rewarded-кнопки одинаково — все
+        // трое просто двигают dripOpened/maxReachedIndex, которые эта
+        // формула читает напрямую, отдельного счётчика для N не заведено.
+        // Math.max(1, …) — защитный пол: для по-настоящему запертой
+        // категории N не может быть <=0 (иначе она не была бы заперта, см.
+        // firstOpenUnfinishedIn), но не полагаемся на это молча.
+        var n = Math.max(1, cat.indices[0] - Retention.dripBoundary(_retentionState, RETENTION_CONFIG));
+        var word = I18N.pluralRu(n, [I18N.t('puzzleWordOne'), I18N.t('puzzleWordFew'), I18N.t('puzzleWordMany')]);
+        progEl.textContent = '🔒 ' + I18N.t('catLockedDistance').replace('{n}', n).replace('{word}', word);
       } else {
         progEl.className = 'cat-progress' + (allDone ? ' is-done' : '');
         progEl.textContent = allDone

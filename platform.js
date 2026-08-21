@@ -266,6 +266,50 @@ window.Platform = (function () {
     return new Date();
   }
 
+  /* ---------------------------------------------------------------
+     ТЗ №09, фаза 1 — сти́ки-баннер (VKWebAppShowBannerAd). Параметры
+     сверены с докой базы «Баннерная реклама для VK» (передана советом
+     дословно, см. VK_banner_doc_dlya_CC.md в корне проекта):
+       десктоп  -> layout_type:'overlay', banner_align:'right', orientation:'vertical'
+       мобайл   -> banner_location:'bottom'
+     Платформа читается из launch-параметра vk_platform (та же техника,
+     что getLang() уже использует для vk_language из URL — VK передаёт оба
+     синхронно при открытии, не нужен async-запрос). desktop_web/desktop_app
+     -> десктопная раскладка, всё остальное (mobile_android/mobile_iphone/
+     mobile_ipad/mobile_web) -> мобильная.
+     --------------------------------------------------------------- */
+  var _bannerClosedByUser = false; // сброс каждой загрузкой страницы — «до следующей сессии»
+
+  function isDesktopPlatform() {
+    try {
+      var p = (new URLSearchParams(location.search)).get('vk_platform') || '';
+      return p === 'desktop_web' || p === 'desktop_app';
+    } catch (e) { return false; }
+  }
+
+  function showBannerAd() {
+    if (!available || _bannerClosedByUser) return;
+    var params = isDesktopPlatform()
+      ? { layout_type: 'overlay', banner_align: 'right', orientation: 'vertical' }
+      : { banner_location: 'bottom' };
+    // Показ — тихий: ошибка/недоступность не блокирует и не ломает игру
+    // (вне платформы — no-op через available выше; внутри платформы —
+    // просто нет баннера, что уже фактически "не мешает").
+    vkBridge.send('VKWebAppShowBannerAd', params).catch(function (e) {
+      console.warn('[Platform] баннер недоступен:', e);
+    });
+  }
+
+  // VKWebAppBannerAdClosedByUser — игрок сам закрыл баннер крестиком;
+  // больше не переоткрываем эту сессию (уважение + меньше жалоб, ТЗ №09).
+  if (hasBridge() && vkBridge.subscribe) {
+    vkBridge.subscribe(function (e) {
+      if (e && e.detail && e.detail.type === 'VKWebAppBannerAdClosedByUser') {
+        _bannerClosedByUser = true;
+      }
+    });
+  }
+
   // Полноэкранная реклама. onDone() зовём в любом исходе.
   function showInterstitial(onDone) {
     var finished = false;
@@ -331,6 +375,7 @@ window.Platform = (function () {
     save: save,
     load: load,
     now: now,
+    showBannerAd: showBannerAd,
     showInterstitial: showInterstitial,
     showRewarded: showRewarded,
     getCatalog: getCatalog,

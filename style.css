@@ -142,7 +142,17 @@ html, body {
   line-height: 1.3;
 }
 #retention-streak-line { margin-top: 6px; }
-#retention-drip-line   { margin-bottom: 16px; }
+#retention-drip-line   { margin-bottom: 8px; }
+
+/* ТЗ №09, фаза 3 — rewarded «Открыть ещё +N», рядом со строкой раздатчика.
+   Меньше и тише основной кнопки «Играть» — вторична по иерархии. */
+.retention-rewarded-btn {
+  display: block;
+  margin: 0 auto 16px;
+  font-size: 0.85rem;
+  padding: 8px 16px;
+  min-height: 34px;
+}
 
 .cat-card.is-locked {
   cursor: default;

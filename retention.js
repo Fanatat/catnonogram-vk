@@ -49,6 +49,7 @@
       dripLine:    'retention-drip-line',
       streakLine:  'retention-streak-line',
       rewardToast: 'retention-reward-toast',
+      rewardedBtn: 'retention-rewarded-btn',
     },
     // Задел на будущее (Словоход/Color Sort используют «звёзды/мастерство» —
     // в нонограммах этой механики нет). Колбэк только объявлен, модуль
@@ -101,8 +102,15 @@
     if (config.callbacks.isCompleted(levelIndex)) return true;              // 1. пройден
     if (levelIndex <= config.callbacks.maxReachedIndex()) return true;      // 2. уже достигнут
     if (levelIndex < config.starterCount) return true;                     // 3. стартовый запас
-    var dripBoundary = config.starterCount + moduleState.dripOpened;       // 4. раздатчик, по порядку
-    return levelIndex < dripBoundary;
+    return levelIndex < dripBoundary(moduleState, config);                 // 4. раздатчик, по порядку
+  }
+
+  // «Граница открытого» (см. заголовок файла, п.2.5 ТЗ №01) — первый индекс,
+  // который раздатчиком ЕЩЁ не открыт. Экспортирована отдельно (не только
+  // внутренняя переменная isLevelOpen) — ТЗ №09, фаза 4: дистанция до
+  // запертой категории = firstIndex категории минус эта граница.
+  function dripBoundary(moduleState, config) {
+    return config.starterCount + moduleState.dripOpened;
   }
 
   /* ---------------------------------------------------------------
@@ -157,6 +165,35 @@
   function nextUnlockAtMs(moduleState, config) {
     if (dripBacklogCount(moduleState, config) >= config.accumulatorCap) return null;
     return moduleState.lastTickAt + config.tickMs;
+  }
+
+  /* ---------------------------------------------------------------
+     ТЗ №09, фаза 3 — rewarded «Открыть ещё +N». ОТДЕЛЬНЫЙ кран от
+     такта: НЕ ограничен accumulatorCap (осознанный риск студии — «кампанию
+     можно открыть роликами за вечер», записан в постановке), только
+     естественной границей конца кампании (дальше totalLevels открывать
+     нечего). Кулдаунов/лимитов нет — вызывающая сторона (main.js) решает,
+     когда звать, сам модуль такого состояния не хранит.
+     --------------------------------------------------------------- */
+  function grantDrip(moduleState, config, amount) {
+    var maxDripOpened = Math.max(0, config.callbacks.totalLevels() - config.starterCount);
+    var newDripOpened = Math.min(moduleState.dripOpened + amount, maxDripOpened);
+    if (newDripOpened === moduleState.dripOpened) return moduleState;
+    return {
+      dripOpened: newDripOpened,
+      lastTickAt: moduleState.lastTickAt,
+      lastEntryDay: moduleState.lastEntryDay,
+      streakLen: moduleState.streakLen,
+      streakRewards: moduleState.streakRewards,
+    };
+  }
+
+  // true, если вся кампания уже открыта (дальше раздатчику/rewarded нечего
+  // открывать) — естественная граница, по которой прячется кнопка rewarded
+  // (ТЗ №09, фаза 3) и «Ещё пазлов» в замке (фаза 4).
+  function isCampaignFullyUnlocked(moduleState, config) {
+    var total = config.callbacks.totalLevels();
+    return total <= 0 || isLevelOpen(total - 1, moduleState, config);
   }
 
   // Сколько сейчас ОТКРЫТЫХ И НЕПРОЙДЕННЫХ уровней ждёт игрока — для
@@ -331,6 +368,9 @@
     applyDripTick:       applyDripTick,
     nextUnlockAtMs:      nextUnlockAtMs,
     openUnfinishedCount: openUnfinishedCount,
+    grantDrip:           grantDrip,
+    isCampaignFullyUnlocked: isCampaignFullyUnlocked,
+    dripBoundary:        dripBoundary,
     dayKeyFromDate:      dayKeyFromDate,
     dayDiff:             dayDiff,
     onEnter:             onEnter,
