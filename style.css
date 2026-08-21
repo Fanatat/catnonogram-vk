@@ -27,6 +27,21 @@ html.theme-graphite {
   --ink-light: #6c6c70;
   --accent:    #55606b;
 }
+/* ТЗ №01: награда за 3-й день серии входов — своя гамма, ОБЯЗАНА
+   отличаться от трёх платных выше (бесплатная выдача не дублирует
+   ассортимент магазина, см. retention.js/main.js grantStyle).
+   ТЗ №03, Фаза 2: --ink затемнён (было #7a3b2e, контраст 157.4 — ниже
+   всех трёх платных, минимум Sepia 164.6). Тот же тон (H≈10°, тёплый
+   красно-коричневый), просто темнее — HSL(10°,45%,25%) вместо
+   HSL(10°,45%,33%), не сдвинут в сторону Sepia (H≈26°) или Graphite
+   (насыщенность ≈0%). Перезамер тем же скриптом — см. отчёт
+   docs/reports/2026-08-20_retention_prerelease.md. */
+html.theme-streak-rust {
+  --bg:        #f3ead6;
+  --ink:       #5d2d23;
+  --ink-light: #8a5a4c;
+  --accent:    #c1533c;
+}
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -113,6 +128,53 @@ html, body {
   color: var(--ink-light);
   padding: 2px 6px;
 }
+
+/* ---- ТЗ №01: модуль удержания (только ВК-сборка, узлы вставляет
+   build.py transform_index_html_vk — в общем index.html их нет) ---- */
+
+/* Постоянная строка — не модалка, не перекрывает кнопки (п. приёмки:
+   видна целиком на 320px, в т.ч. горизонтально). */
+.retention-line {
+  font-size: 0.8rem;
+  color: var(--ink-light);
+  text-align: center;
+  max-width: 280px;
+  line-height: 1.3;
+}
+#retention-streak-line { margin-top: 6px; }
+#retention-drip-line   { margin-bottom: 16px; }
+
+.cat-card.is-locked {
+  cursor: default;
+  opacity: 0.55;
+}
+.cat-card.is-locked:active { background: transparent; }
+.cat-card.is-locked .cat-name,
+.cat-card.is-locked:active .cat-name { color: var(--ink); }
+.cat-lock-icon {
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+
+/* Всплывающий отклик на выдачу награды (п.2.4) — короткий, ненавязчивый,
+   сам прячется, не блокирует ввод (не overlay/модалка). */
+.retention-toast {
+  position: absolute;
+  left: 50%; top: 14px;
+  transform: translateX(-50%);
+  max-width: 90%;
+  padding: 8px 16px;
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  text-align: center;
+  pointer-events: none;
+  z-index: 50;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.retention-toast.is-visible { opacity: 1; }
 
 /* Кнопка звука */
 #btn-sound-menu {
@@ -603,6 +665,7 @@ html, body {
   color: var(--bg);
 }
 .hint-btn {
+  position: relative;
   max-width: 190px;
   border: 2px solid var(--ink-light);
   background: transparent;
@@ -612,6 +675,27 @@ html, body {
 .hint-btn:disabled {
   opacity: 0.35;
   cursor: default;
+}
+/* ТЗ №03, Фаза 1: видимый баланс бонусных подсказок (награда 2-го дня
+   серии входов, ТЗ №01 — до этого жила только 3с тоста и пропадала).
+   pointer-events:none — бейдж никогда не перехватывает тап, весь клик
+   уходит на саму кнопку. Смещение -6/-7px внутрь запаса паддинга
+   .mode-bar (min 16px справа) — не уходит за экран на 320×568/568×320. */
+.hint-badge {
+  position: absolute;
+  top: -7px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  pointer-events: none;
 }
 
 /* ---- Экран календаря ---- */

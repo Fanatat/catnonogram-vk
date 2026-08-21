@@ -45,6 +45,16 @@ var VK_WRITE_LIMIT_PER_HOUR  = 1000;  // dev.vk.com: лимит VKWebAppStorageS
 var VK_SOFT_BRAKE_THRESHOLD  = 700;   // с этого количества/час начинаем тормозить
 var VK_MAX_DEBOUNCE_MS       = 60000; // потолок паузы вплотную к лимиту
 
+// 3500 — временный бюджет студии, не подтверждённое требование ВК.
+// Долг: положить страницу dev.vk.com в базу и заменить цифру. Реального
+// задокументированного лимита ВК на размер значения VKWebAppStorageSet в
+// базе знаний нет; вторичные источники называют около 4КБ и сообщают о
+// более жёсткой границе для сериализованных объектов — 3500 взято с
+// запасом от этой оценки. Единственный источник истины для байтового
+// лимита сейва (см. save.js enforceSizeGuard) — общий код (main.js) его
+// не задаёт.
+var VK_SAVE_SIZE_GUARD_BYTES = 3500;
+
 // Выбрасывает из лога отметки времени старше скользящего часа. Чистая
 // функция — возвращает НОВЫЙ массив, не мутирует переданный.
 function vkPruneWriteLog(writeLog, nowMs) {
@@ -236,8 +246,25 @@ window.Platform = (function () {
       });
   }
 
-  // Ежедневный режим не входит в VK-порт — часы устройства без подмены.
-  function now() { return new Date(); }
+  // ТЗ №01, п.3.1: по образцу яндексовского platform.js. На платформе —
+  // ВСЕГДА реальные часы устройства (?fakeDate игнорируется, даже если
+  // случайно окажется в URL хостинга — available=true на боевом ВК, эту
+  // ветку игрок обойти не может). Вне платформы (dev/приёмка) допускаем
+  // ?fakeDate=YYYY-MM-DD в query — без этого нельзя проверить серию
+  // входов/раздатчик за один присест, не дожидаясь реальной полуночи.
+  function now() {
+    if (available) return new Date();
+    try {
+      var params = new URLSearchParams(window.location.search);
+      var fake = params.get('fakeDate');
+      if (fake && /^\d{4}-\d{2}-\d{2}$/.test(fake)) {
+        var p = fake.split('-');
+        var d = new Date(+p[0], +p[1] - 1, +p[2]);
+        if (!isNaN(d.getTime())) return d;
+      }
+    } catch (e) { /* падать нельзя */ }
+    return new Date();
+  }
 
   // Полноэкранная реклама. onDone() зовём в любом исходе.
   function showInterstitial(onDone) {
@@ -305,6 +332,7 @@ window.Platform = (function () {
     getPurchases: getPurchases,
     purchase: purchase,
     consumePurchase: consumePurchase,
+    SAVE_SIZE_GUARD_BYTES: VK_SAVE_SIZE_GUARD_BYTES,
   };
 })();
 }
@@ -319,5 +347,6 @@ if (typeof module === 'object' && module.exports) {
     WRITE_LIMIT_PER_HOUR: VK_WRITE_LIMIT_PER_HOUR,
     SOFT_BRAKE_THRESHOLD: VK_SOFT_BRAKE_THRESHOLD,
     MAX_DEBOUNCE_MS:      VK_MAX_DEBOUNCE_MS,
+    SAVE_SIZE_GUARD_BYTES: VK_SAVE_SIZE_GUARD_BYTES,
   };
 }

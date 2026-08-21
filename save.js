@@ -28,10 +28,13 @@
   }
 })(typeof window !== 'undefined' ? window : this, function () {
 
-  // Единственное место для обеих констант (п.3в) — потолок числа
-  // недорешённых досок кампании и байтовый лимит на сериализованный сейв.
+  // Потолок числа недорешённых досок кампании (п.3в). Байтовый лимit
+  // сериализованного сейва save.js НЕ хранит — это площадка-специфичное
+  // значение (Yandex 200КБ vs VK ~4КБ), единственный источник истины —
+  // Platform.SAVE_SIZE_GUARD_BYTES (platform.js / adapters/vk_bridge.js).
+  // save.js — чистые функции без побочных эффектов, о площадке не знает,
+  // enforceSizeGuard() принимает лимит параметром (см. ниже).
   var MAX_UNFINISHED_BOARDS = 3;
-  var SAVE_SIZE_GUARD_BYTES = 2000;
 
   // true, если доска не содержит ни одной значимой отметки (закраски
   // или крестика) — такую доску незачем хранить в сейве.
@@ -136,6 +139,21 @@
       dailyBoardDate:  '',     // 'YYYY-M-D' (локальная дата), которой принадлежит dailyBoard
       cosmeticsOwned:  {},     // { productId: true } — куплено НАВСЕГДА (Задача E)
       activeCosmetic:  '',     // id включённой косметики либо '' (дефолтная тема)
+      // ТЗ №01 (модуль удержания). maxReachedIndex — самый дальний индекс
+      // уровня, который игрок когда-либо ОТКРЫВАЛ (не обязательно прошёл;
+      // растёт монотонно, main.js: showGame()) — используется замком
+      // retention.js (правило 2: «до максимума достигнутого — не запирать»)
+      // и НЕ совпадает по смыслу с lastLevelIndex (тот — «куда ведёт
+      // Продолжить», может прыгать между категориями). bonusHints —
+      // баланс бесплатных подсказок вне рекламного гейта (выдаёт
+      // retention.js за 2-й день серии, main.js их тратит первыми в
+      // onHintClick(), НЕ создавая свой гейт частоты рекламы). retention —
+      // компактный блок модуля (см. retention.js encodeState/decodeState),
+      // null у игрока без этих полей — main.js сам вызовет
+      // Retention.initState() при загрузке.
+      maxReachedIndex: -1,
+      bonusHints:      0,
+      retention:       null,
     };
   }
 
@@ -144,9 +162,9 @@
     return new Blob([JSON.stringify(payload)]).size;
   }
 
-  // Сторож перед записью: лимит Яндекса на игрока — 200КБ (сверено с
-  // документацией SDK, 24.07.2026). Вызывающий передаёт limitBytes с
-  // запасом (main.js берёт 150000 — 75% от лимита). Сначала обрезает
+  // Сторож перед записью. limitBytes передаёт вызывающий (main.js берёт
+  // Platform.SAVE_SIZE_GUARD_BYTES — площадка-специфичное значение,
+  // см. platform.js/adapters/vk_bridge.js). Сначала обрезает
   // до MAX_UNFINISHED_BOARDS (п.3б), затем, пока сериализованный payload
   // всё ещё больше limitBytes, выбрасывает САМУЮ СТАРУЮ (по seq)
   // недорешённую доску кампании — НИКОГДА не completedLevels/cosmeticsOwned
@@ -195,6 +213,28 @@
     out.cosmeticsOwned = (oldSave.cosmeticsOwned && typeof oldSave.cosmeticsOwned === 'object') ? oldSave.cosmeticsOwned : {};
     out.activeCosmetic = (typeof oldSave.activeCosmetic === 'string') ? oldSave.activeCosmetic : '';
 
+    // ТЗ №01, п.2.5 (миграция замка): у игрока без maxReachedIndex (сейв
+    // до этого ТЗ) граница открытого восстанавливается по правилам 1-2 —
+    // максимум из lastLevelIndex и самого большого пройденного индекса
+    // (lastLevelIndex один сам по себе не гарантирует максимум — см.
+    // комментарий в emptySave()). retention/bonusHints — обычный
+    // сквозной проход валидных полей, отсутствие -> дефолт; ВАЛИДНОСТЬ
+    // структуры retention-блока (t/b/d/s/r) save.js не проверяет — это
+    // забота retention.js (Retention.isValidEncoded), save.js её формы
+    // не знает и знать не должен (см. заголовок файла).
+    if (typeof oldSave.maxReachedIndex === 'number') {
+      out.maxReachedIndex = oldSave.maxReachedIndex;
+    } else {
+      var legacyMaxReached = out.lastLevelIndex;
+      Object.keys(out.completedLevels).forEach(function (k) {
+        var n = +k;
+        if (n > legacyMaxReached) legacyMaxReached = n;
+      });
+      out.maxReachedIndex = legacyMaxReached;
+    }
+    out.bonusHints = (typeof oldSave.bonusHints === 'number') ? oldSave.bonusHints : 0;
+    out.retention   = (oldSave.retention && typeof oldSave.retention === 'object') ? oldSave.retention : null;
+
     // Подчистка «призрачных» пустых досок — старые сейвы могли записать
     // недорешённую доску, которую потом стёрли до нуля (см. фикс в main.js:
     // flushBoardSave/flushDailySave больше не пишут пустые матрицы, но
@@ -235,6 +275,5 @@
     payloadSize:           payloadSize,
     enforceSizeGuard:      enforceSizeGuard,
     MAX_UNFINISHED_BOARDS: MAX_UNFINISHED_BOARDS,
-    SAVE_SIZE_GUARD_BYTES: SAVE_SIZE_GUARD_BYTES,
   };
 });
