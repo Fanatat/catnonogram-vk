@@ -68,7 +68,23 @@ html, body {
 }
 
 .screen {
-  position: absolute; inset: 0;
+  position: absolute;
+  top: 0; left: 0;
+  /* ТЗ №10, фаза 1/2 (шаг B) — резерв места под ВК-баннер вместо наезда
+     поверх контента. Переменные ставит/снимает adapters/vk_bridge.js
+     (applyBannerReserve) по факту VKWebAppCheckBannerAd/BannerAdUpdated/
+     BannerAdClosedByUser; в источнике и в яндекс-сборке переменных нет —
+     0px, .screen как раньше растянут на весь #app, поведение не меняется.
+     Явные right/bottom вместо inset:0 — сокращают собственный бокс
+     .screen (не padding предка: тот НЕ сжимает containing block
+     абсолютно спозиционированных потомков, проверено живым прогоном),
+     поэтому flex-центрирование (align-items/justify-content ниже) само
+     центрирует портретную колонку в ОСТАВШЕЙСЯ области — без правок
+     разметки экранов. safe-area (фаза 2, низ на мобиле) добавляется, а
+     не заменяет резерв. */
+  right: var(--vk-banner-reserve-right, 0px);
+  bottom: calc(var(--vk-banner-reserve-bottom, 0px) + env(safe-area-inset-bottom, 0px));
+  transition: right 0.2s ease, bottom 0.2s ease;
   display: none;
   flex-direction: column;
   align-items: center;
@@ -226,7 +242,13 @@ html, body {
 .build-tag {
   position: absolute;
   left: max(8px, env(safe-area-inset-left));
-  bottom: max(8px, env(safe-area-inset-bottom));
+  /* ТЗ №10: .build-tag живёт ВНЕ .screen (см. комментарий выше) — резерв
+     .screen на bottom (мобильный баннер) его не задевает автоматически,
+     как задевает всё остальное внутри .screen. Тот же --vk-banner-
+     reserve-bottom нужен и здесь явно, иначе плашка окажется под
+     баннером — ровно то, что это ТЗ и просило не допустить. */
+  bottom: calc(max(8px, env(safe-area-inset-bottom)) + var(--vk-banner-reserve-bottom, 0px));
+  transition: bottom 0.2s ease;
   font-size: 0.65rem;
   color: var(--ink-light);
   opacity: 0.35;

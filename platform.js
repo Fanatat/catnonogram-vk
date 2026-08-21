@@ -267,18 +267,40 @@ window.Platform = (function () {
   }
 
   /* ---------------------------------------------------------------
-     ТЗ №09, фаза 1 — сти́ки-баннер (VKWebAppShowBannerAd). Параметры
-     сверены с докой базы «Баннерная реклама для VK» (передана советом
-     дословно, см. VK_banner_doc_dlya_CC.md в корне проекта):
-       десктоп  -> layout_type:'overlay', banner_align:'right', orientation:'vertical'
-       мобайл   -> banner_location:'bottom'
+     ТЗ №09/№10 — сти́ки-баннер (VKWebAppShowBannerAd). Параметры сверены
+     с докой базы «Баннерная реклама для VK» (VK_banner_doc_dlya_CC.md,
+     передана советом дословно). ТЗ №10: живой заход основателя показал,
+     что overlay накрывает карточки категорий — 'overlay' по смыслу и
+     означает «поверх». Водопад режимов (ТЗ №10, диагноз п.0):
+       Шаг A — десктоп: layout_type:'resize' вместо 'overlay' (в доке
+         подтверждён только для мобильного приложения; для десктопа
+         поддержка НЕ подтверждена первоисточником — заказываем, но не
+         полагаемся на него одного).
+       Шаг B — ГАРАНТИРОВАННЫЙ, не зависит от того, послушал ли VK шаг A:
+         остаёмся на факте (баннер может визуально оставаться overlay),
+         но САМИ резервируем место игровому контейнеру по РЕАЛЬНЫМ
+         размерам баннера (VKWebAppCheckBannerAd при старте +
+         VKWebAppBannerAdUpdated на изменения) через CSS-переменные
+         --vk-banner-reserve-right/--vk-banner-reserve-bottom (style.css,
+         #app). Портретная колонка сама центрируется в оставшейся ширине
+         (#app padding сдвигает containing block у .screen{inset:0} —
+         правки в main.js/screen-разметке не нужны).
      Платформа читается из launch-параметра vk_platform (та же техника,
-     что getLang() уже использует для vk_language из URL — VK передаёт оба
-     синхронно при открытии, не нужен async-запрос). desktop_web/desktop_app
-     -> десктопная раскладка, всё остальное (mobile_android/mobile_iphone/
-     mobile_ipad/mobile_web) -> мобильная.
+     что getLang() уже использует для vk_language из URL). desktop_web/
+     desktop_app -> десктоп, всё остальное -> мобайл.
+
+     ЧЕСТНО (как и в ТЗ №09 про сам вид баннера): точная схема полей
+     VKWebAppCheckBannerAd/VKWebAppBannerAdUpdated (какими именами приходит
+     ширина/высота) не подтверждена ни одной локальной докой — dev.vk.com
+     недоступен из этой сети. extractBannerSize() ниже читает несколько
+     правдоподобных имён полей и, если ни одно не подошло, откатывается на
+     задокументированный запасной размер (с запасом, чтобы не воспроизвести
+     тот же баг — лучше зарезервировать чуть больше места, чем перекрыть
+     карточки повторно). Живая проверка реальных значений — на основателе.
      --------------------------------------------------------------- */
   var _bannerClosedByUser = false; // сброс каждой загрузкой страницы — «до следующей сессии»
+  var BANNER_FALLBACK_WIDTH_PX  = 300; // десктоп, вертикальный баннер — не подтверждено докой, запас
+  var BANNER_FALLBACK_HEIGHT_PX = 90;  // мобайл, нижний баннер — не подтверждено докой, запас
 
   function isDesktopPlatform() {
     try {
@@ -287,25 +309,74 @@ window.Platform = (function () {
     } catch (e) { return false; }
   }
 
+  // Резервирует контейнеру место под баннер (Шаг B). px=0 — снять резерв
+  // (баннер закрыт/скрыт). Одна CSS-переменная активна за раз: десктоп
+  // резервирует справа, мобайл — снизу (по той же isDesktopPlatform(),
+  // что решает раскладку показа).
+  function applyBannerReserve(px) {
+    var varName = isDesktopPlatform() ? '--vk-banner-reserve-right' : '--vk-banner-reserve-bottom';
+    document.documentElement.style.setProperty(varName, Math.max(0, px | 0) + 'px');
+  }
+
+  // Читает ширину/высоту из ответа VKWebAppCheckBannerAd или данных
+  // события VKWebAppBannerAdUpdated — схема полей не подтверждена докой
+  // (см. заголовок блока), поэтому перебираем правдоподобные варианты
+  // вместо одного жёстко зашитого имени.
+  function extractBannerSize(payload) {
+    if (!payload) return null;
+    var w = payload.width != null ? payload.width
+      : (payload.banner_width != null ? payload.banner_width
+      : (payload.size && payload.size.width != null ? payload.size.width : null));
+    var h = payload.height != null ? payload.height
+      : (payload.banner_height != null ? payload.banner_height
+      : (payload.size && payload.size.height != null ? payload.size.height : null));
+    if (w == null && h == null) return null;
+    return { width: w, height: h };
+  }
+
   function showBannerAd() {
     if (!available || _bannerClosedByUser) return;
-    var params = isDesktopPlatform()
-      ? { layout_type: 'overlay', banner_align: 'right', orientation: 'vertical' }
+    var desktop = isDesktopPlatform();
+    var params = desktop
+      ? { layout_type: 'resize', banner_align: 'right', orientation: 'vertical' } // Шаг A
       : { banner_location: 'bottom' };
     // Показ — тихий: ошибка/недоступность не блокирует и не ломает игру
     // (вне платформы — no-op через available выше; внутри платформы —
     // просто нет баннера, что уже фактически "не мешает").
-    vkBridge.send('VKWebAppShowBannerAd', params).catch(function (e) {
-      console.warn('[Platform] баннер недоступен:', e);
-    });
+    vkBridge.send('VKWebAppShowBannerAd', params)
+      .then(function () {
+        // Резерв СРАЗУ по запасному размеру (Шаг B, оптимистично) — не
+        // ждём VKWebAppBannerAdUpdated, чтобы не было окна, где баннер уже
+        // показан, а карточки ещё не подвинуты (тот самый баг ТЗ №10).
+        applyBannerReserve(desktop ? BANNER_FALLBACK_WIDTH_PX : BANNER_FALLBACK_HEIGHT_PX);
+        // VKWebAppCheckBannerAd при старте (ТЗ №10, шаг B) — уточняет
+        // резерв реальным размером, если Bridge его отдаёт.
+        vkBridge.send('VKWebAppCheckBannerAd').then(function (res) {
+          var size = extractBannerSize(res);
+          if (size) applyBannerReserve(desktop ? size.width : size.height);
+        }).catch(function () { /* остаёмся на запасном размере */ });
+      })
+      .catch(function (e) {
+        console.warn('[Platform] баннер недоступен:', e);
+      });
   }
 
-  // VKWebAppBannerAdClosedByUser — игрок сам закрыл баннер крестиком;
-  // больше не переоткрываем эту сессию (уважение + меньше жалоб, ТЗ №09).
   if (hasBridge() && vkBridge.subscribe) {
     vkBridge.subscribe(function (e) {
-      if (e && e.detail && e.detail.type === 'VKWebAppBannerAdClosedByUser') {
+      if (!e || !e.detail) return;
+      // VKWebAppBannerAdClosedByUser — игрок сам закрыл баннер крестиком;
+      // больше не переоткрываем эту сессию (уважение + меньше жалоб) и
+      // снимаем резерв — раскладка возвращается (ТЗ №10, шаг B).
+      if (e.detail.type === 'VKWebAppBannerAdClosedByUser') {
         _bannerClosedByUser = true;
+        applyBannerReserve(0);
+      }
+      // VKWebAppBannerAdUpdated — уточняем резерв реальным размером
+      // (ТЗ №10, шаг B). Молчим, если размер не распознан — остаёмся на
+      // том, что уже выставлено (запасной или предыдущий реальный).
+      if (e.detail.type === 'VKWebAppBannerAdUpdated') {
+        var size = extractBannerSize(e.detail.data);
+        if (size) applyBannerReserve(isDesktopPlatform() ? size.width : size.height);
       }
     });
   }
