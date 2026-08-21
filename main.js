@@ -314,19 +314,28 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   }
 
-  // Строка раздатчика (экран категорий) — п.2.2. Запрет: без общего числа
-  // уровней и без числа закрытых, только «сколько ждёт» и точное время.
+  // Строка раздатчика (экран категорий) — ТЗ №07, фаза 1. Продаёт изобилие,
+  // время — обещание сверху, не главное сообщение. Запрет: без общего числа
+  // уровней и без числа закрытых, только «сколько ждёт» и точное время
+  // (ТЗ №01, требование остаётся в силе).
   function renderRetentionDripLine() {
     if (!_retentionState) return;
     var el = document.getElementById(RETENTION_CONFIG.domSlots.dripLine);
     if (!el) return;
     var waiting = Retention.openUnfinishedCount(_retentionState, RETENTION_CONFIG);
     var nextAt  = Retention.nextUnlockAtMs(_retentionState, RETENTION_CONFIG);
-    var line1 = I18N.t('retentionDripLine').replace('{n}', waiting);
-    var line2 = (nextAt == null)
-      ? I18N.t('retentionFull')
-      : I18N.t('retentionNextAt').replace('{time}', _formatClock(new Date(nextAt)));
-    el.textContent = line1 + ' · ' + line2;
+    var text;
+    if (nextAt == null) {
+      // накопитель полон
+      text = I18N.t('retentionFull');
+    } else if (waiting > 0) {
+      var line1 = I18N.t('retentionWaitingLine').replace('{n}', waiting);
+      var line2 = I18N.t('retentionNextAt').replace('{time}', _formatClock(new Date(nextAt)));
+      text = line1 + ' · ' + line2;
+    } else {
+      text = I18N.t('retentionEmptyLine').replace('{time}', _formatClock(new Date(nextAt)));
+    }
+    el.textContent = text;
   }
 
   // Строка серии (главный экран) — п.2.3, видна ПОСТОЯННО (не hidden).
@@ -567,7 +576,15 @@ document.addEventListener('DOMContentLoaded', function () {
       showCalendar();
     };
 
-    document.getElementById('btn-shop').onclick = function () {
+    // ТЗ №07, фаза 3.2: до гейта (COSMETIC_UNLOCK_LEVELS пройдено) экран
+    // магазина — одна строка про гейт и пустота, ничего не продаёт и
+    // выглядит сломанным. Дешевле скрыть пункт меню, чем рисовать силуэты
+    // товаров — согласуется со стандартом «витрина выводится из
+    // возможности» (см. фазу 3.3).
+    var btnShop = document.getElementById('btn-shop');
+    var shopUnlocked = Object.keys(_completedLevels).length >= COSMETIC_UNLOCK_LEVELS;
+    btnShop.hidden = !shopUnlocked;
+    btnShop.onclick = function () {
       Sound.resumeContext();
       showShop();
     };
@@ -739,7 +756,17 @@ document.addEventListener('DOMContentLoaded', function () {
 
     lockedEl.hidden = true;
     listEl.innerHTML = '';
-    COSMETICS.forEach(function (cos) {
+    // ТЗ №07, фаза 3.3: платежи на ВК не подключены (Platform.paymentsAvailable
+    // === false) — состояние «витрина видна, купить нельзя» обязано быть
+    // невыразимым (стандарт студии 18.08), поэтому платные ряды (не free,
+    // не streakReward) в такой сборке не рисуются вовсе, а не дизейблятся.
+    // Код покупок не удалён — на Яндексе (paymentsAvailable:true) ряды
+    // остаются, поведение не меняется.
+    var shownCosmetics = Platform.paymentsAvailable
+      ? COSMETICS
+      : COSMETICS.filter(function (cos) { return cos.free || cos.streakReward; });
+
+    shownCosmetics.forEach(function (cos) {
       listEl.appendChild(buildShopItemRow(cos, null)); // null = каталог ещё не пришёл
     });
 
@@ -748,7 +775,7 @@ document.addEventListener('DOMContentLoaded', function () {
       var catalogMap = {};
       catalog.forEach(function (p) { catalogMap[p.id] = p; });
       listEl.innerHTML = '';
-      COSMETICS.forEach(function (cos) {
+      shownCosmetics.forEach(function (cos) {
         listEl.appendChild(buildShopItemRow(cos, catalogMap));
       });
     });
