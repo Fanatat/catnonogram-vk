@@ -39,6 +39,7 @@
 
   var DEFAULT_CONFIG = {
     tickMs:          6 * 60 * 60 * 1000, // такт раздатчика (п.2.1)
+    dripPerTick:     1,                  // порция — сколько уровней открывает один такт (ТЗ №08)
     accumulatorCap:  4,                  // потолок накопителя (п.2.1)
     starterCount:    11,                 // стартовый запас, всегда открыт (п.2.1)
     streakThreshold: 3,                  // длина серии для полной награды (п.2.3)
@@ -131,12 +132,20 @@
     if (elapsed < config.tickMs) return moduleState;
 
     var ticks = Math.floor(elapsed / config.tickMs);
-    var grant = Math.min(ticks, room);
-    if (grant <= 0) return moduleState;
+    // Порция > 1 (ТЗ №08): такт даёт dripPerTick уровней разом, не 1. Число
+    // ПРИМЕНЁННЫХ тактов ограничено местом в накопителе (в тактах, округление
+    // вверх — последний такт у потолка может отдать неполную порцию), а не
+    // самим grant — иначе lastTickAt продвинется на время, которое реально
+    // не «выкуплено» гарантом простоя (см. комментарий выше: время должно
+    // стоять, пока накопитель полон, простой не теряется).
+    var ticksForRoom = Math.ceil(room / config.dripPerTick);
+    var ticksApplied = Math.min(ticks, ticksForRoom);
+    if (ticksApplied <= 0) return moduleState;
+    var grant = Math.min(ticksApplied * config.dripPerTick, room);
 
     return {
       dripOpened: moduleState.dripOpened + grant,
-      lastTickAt: moduleState.lastTickAt + grant * config.tickMs,
+      lastTickAt: moduleState.lastTickAt + ticksApplied * config.tickMs,
       lastEntryDay: moduleState.lastEntryDay,
       streakLen: moduleState.streakLen,
       streakRewards: moduleState.streakRewards,
@@ -247,8 +256,11 @@
      --------------------------------------------------------------- */
   function initState(maxReachedIndex, nowMs, config) {
     var isBrandNew = maxReachedIndex < 0;
+    // ТЗ №08: новый игрок стартует с ОДНОЙ порцией в накопителе (уважение,
+    // не полный потолок с первой секунды) — starterCount + dripPerTick
+    // открытых уровней на старте, не starterCount + accumulatorCap.
     var dripOpened = isBrandNew
-      ? config.accumulatorCap
+      ? config.dripPerTick
       : Math.max(0, (maxReachedIndex + 1) - config.starterCount);
     return {
       dripOpened:    dripOpened,

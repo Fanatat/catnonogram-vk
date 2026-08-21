@@ -75,6 +75,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
   var RETENTION_CONFIG = (typeof Retention !== 'undefined') ? Retention.mergeConfig({
     tickMs: RETENTION_TICK_MS,
+    // ТЗ №08: «1 пазл в 6 часов» ощущался как дефицит, не пейсинг. Порция
+    // 1->6, потолок 4->24 (= сутки полного простоя без потерь). Такт
+    // (6 часов) не меняется. Числа утверждены основателем явно.
+    dripPerTick: 6,
+    accumulatorCap: 24,
     hintsRewardCount: 2, // п.2.3: «2-й день — подсказки (число задаётся конфигом)»
     callbacks: {
       totalLevels:     function ()  { return LEVELS.length; },
@@ -314,8 +319,10 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   }
 
-  // Строка раздатчика (экран категорий) — ТЗ №07, фаза 1. Продаёт изобилие,
-  // время — обещание сверху, не главное сообщение. Запрет: без общего числа
+  // Строка раздатчика (экран категорий) — ТЗ №07 фаза 1 / ТЗ №08 фаза 2.
+  // Продаёт изобилие, время — обещание сверху, не главное сообщение. Порция
+  // теперь честно озвучивается числом (ТЗ №08: «1 пазл в 6ч» ощущался как
+  // дефицит — молчать о порции больше не вариант). Запрет: без общего числа
   // уровней и без числа закрытых, только «сколько ждёт» и точное время
   // (ТЗ №01, требование остаётся в силе).
   function renderRetentionDripLine() {
@@ -324,16 +331,25 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!el) return;
     var waiting = Retention.openUnfinishedCount(_retentionState, RETENTION_CONFIG);
     var nextAt  = Retention.nextUnlockAtMs(_retentionState, RETENTION_CONFIG);
+    var portion = RETENTION_CONFIG.dripPerTick;
     var text;
     if (nextAt == null) {
       // накопитель полон
       text = I18N.t('retentionFull');
     } else if (waiting > 0) {
       var line1 = I18N.t('retentionWaitingLine').replace('{n}', waiting);
-      var line2 = I18N.t('retentionNextAt').replace('{time}', _formatClock(new Date(nextAt)));
+      var line2 = I18N.t('retentionNextAt')
+        .replace('{n}', portion)
+        .replace('{time}', _formatClock(new Date(nextAt)));
       text = line1 + ' · ' + line2;
     } else {
-      text = I18N.t('retentionEmptyLine').replace('{time}', _formatClock(new Date(nextAt)));
+      var word = I18N.pluralRu(portion, [I18N.t('puzzleWordOne'), I18N.t('puzzleWordFew'), I18N.t('puzzleWordMany')]);
+      var verb = I18N.pluralRu(portion, [I18N.t('puzzleArriveVerbOne'), I18N.t('puzzleArriveVerbMany'), I18N.t('puzzleArriveVerbMany')]);
+      text = I18N.t('retentionEmptyLine')
+        .replace('{n}', portion)
+        .replace('{word}', word)
+        .replace('{verb}', verb)
+        .replace('{time}', _formatClock(new Date(nextAt)));
     }
     el.textContent = text;
   }
@@ -829,7 +845,20 @@ document.addEventListener('DOMContentLoaded', function () {
       // замок. allDone/обычный прогресс — как раньше.
       if (locked) {
         progEl.className = 'cat-progress cat-lock-icon';
-        progEl.textContent = '🔒 ' + I18N.t('catLocked');
+        // ТЗ №08, фаза 3: конкретный ориентир вместо «по мере прохождения» —
+        // имя ПРЕДЫДУЩЕЙ категории (последняя ссылается на предпоследнюю),
+        // берётся из данных (CATEGORIES), не хардкодом — модуль переносится
+        // в другие игры с другим набором категорий. catIdx===0 защитно
+        // (стартовый запас гарантирует, что первая категория не запирается
+        // никогда — см. п.813) падает на общую формулировку без ссылки.
+        // «После» требует родительного падежа («после Средних», не «после
+        // Средние») — родительная форма живёт отдельным i18n-ключом
+        // (`{key}Gen`) рядом с именительной, не считается алгоритмом
+        // (общее русское словоизменение — за рамками этой правки).
+        var prevCat = catIdx > 0 ? CATEGORIES[catIdx - 1] : null;
+        progEl.textContent = '🔒 ' + (prevCat
+          ? I18N.t('catLocked').replace('{prev}', I18N.t(prevCat.key + 'Gen'))
+          : I18N.t('catLockedGeneric'));
       } else {
         progEl.className = 'cat-progress' + (allDone ? ' is-done' : '');
         progEl.textContent = allDone

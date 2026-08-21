@@ -34,6 +34,13 @@ window.I18N = (function () {
       catMedium:   'Средние',
       catHard:     'Сложные',
       catLibrary:  'Ещё пазлы',
+      // Родительный падеж («после ...») — ТЗ №08, фаза 3. Отдельные ключи,
+      // не алгоритм словоизменения.
+      catTutorialGen: 'Обучения',
+      catEasyGen:     'Лёгких',
+      catMediumGen:   'Средних',
+      catHardGen:     'Сложных',
+      catLibraryGen:  'Ещё пазлов',
       howTo:       'Как играть',
       daily:       'Ежедневный',
       dailyLabel:  'Ежедневный пазл',
@@ -58,11 +65,17 @@ window.I18N = (function () {
       shopStreakReward:   'Награда за серию',
       shopStreakLocked:   'Откроется за серию входов',
       cosmeticStreakRustName: 'Терракота',
-      catLocked:          'Откроется по мере прохождения',
+      catLocked:          'Откроется после «{prev}»',
+      catLockedGeneric:   'Откроется по мере прохождения',
       retentionWaitingLine: 'Пазлы ждут: {n}',
-      retentionNextAt:    'новый — в {time}',
-      retentionEmptyLine: 'Новый пазл появится в {time}',
+      retentionNextAt:    'ещё +{n} в {time}',
+      retentionEmptyLine: '+{n} {word} {verb} в {time}',
       retentionFull:      'Пазлы ждут — играйте!',
+      puzzleWordOne:      'пазл',
+      puzzleWordFew:      'пазла',
+      puzzleWordMany:     'пазлов',
+      puzzleArriveVerbOne: 'появится',
+      puzzleArriveVerbMany: 'появятся',
       retentionStreakLine:'Серия входов: {n} из {m}',
       retentionRewardHints:'+{n} подсказки бесплатно — серия входов!',
       retentionRewardStyle:'Новый стиль открыт — серия входов!',
@@ -174,6 +187,12 @@ window.I18N = (function () {
       catMedium:   'Medium',
       catHard:     'Hard',
       catLibrary:  'More puzzles',
+      // English has no grammatical case — same as nominative.
+      catTutorialGen: 'Tutorial',
+      catEasyGen:     'Easy',
+      catMediumGen:   'Medium',
+      catHardGen:     'Hard',
+      catLibraryGen:  'More puzzles',
       howTo:       'How to play',
       daily:       'Daily',
       dailyLabel:  'Daily Puzzle',
@@ -198,11 +217,17 @@ window.I18N = (function () {
       shopStreakReward:   'Streak reward',
       shopStreakLocked:   'Unlocks via login streak',
       cosmeticStreakRustName: 'Terracotta',
-      catLocked:          'Unlocks as you progress',
+      catLocked:          'Unlocks after "{prev}"',
+      catLockedGeneric:   'Unlocks as you progress',
       retentionWaitingLine: 'Puzzles waiting: {n}',
-      retentionNextAt:    'next — at {time}',
-      retentionEmptyLine: 'New puzzle arrives at {time}',
+      retentionNextAt:    'plus {n} more at {time}',
+      retentionEmptyLine: '+{n} {word} {verb} at {time}',
       retentionFull:      'Puzzles are waiting — go play!',
+      puzzleWordOne:      'puzzle',
+      puzzleWordFew:      'puzzles',
+      puzzleWordMany:     'puzzles',
+      puzzleArriveVerbOne: 'arrives',
+      puzzleArriveVerbMany: 'arrive',
       retentionStreakLine:'Login streak: {n} of {m}',
       retentionRewardHints:'+{n} free hints — login streak!',
       retentionRewardStyle:'New style unlocked — login streak!',
@@ -302,6 +327,18 @@ window.I18N = (function () {
     return dict[key] != null ? dict[key] : key;
   }
 
+  // ТЗ №08: порция раздатчика (константа конфига, не «сколько ждёт» — то
+  // остаётся без склонения, см. main.js) озвучивается честным числом и
+  // должна согласовываться по-русски (1 пазл / 2-4 пазла / 5+ пазлов).
+  // forms = [one, few, many] — уже переведённые слова (I18N.t(...) вызывает
+  // сторона).
+  function pluralRu(n, forms) {
+    var mod10 = n % 10, mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return forms[0];
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return forms[1];
+    return forms[2];
+  }
+
   // Проставляет переводы во все элементы с атрибутом data-i18n.
   function apply(root) {
     var nodes = (root || document).querySelectorAll('[data-i18n]');
@@ -311,5 +348,5 @@ window.I18N = (function () {
     document.documentElement.lang = current;
   }
 
-  return { pick: pick, t: t, apply: apply, get current() { return current; } };
+  return { pick: pick, t: t, apply: apply, pluralRu: pluralRu, get current() { return current; } };
 })();
