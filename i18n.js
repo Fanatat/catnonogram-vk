@@ -71,6 +71,14 @@ window.I18N = (function () {
       catLockedDistance: '{n} {word} до открытия — играйте дальше или откройте роликом',
       retentionWaitingLine: 'Пазлы ждут: {n}',
       retentionNextAt:    'ещё +{n} в {time}',
+      // ТЗ №21/22: подпись предела такта раздатчика — показывается ТОЛЬКО
+      // когда backlog реально на потолке (main.js renderRetentionDripLine).
+      // Из трёх вариантов, отснятых кадрами на приёмку (docs/reports/
+      // 2026-08-22_max_label.md), основатель выбрал вариант B (ТЗ №22):
+      // «(макс.)» отмечен в Фазе 0 ТЗ №21 как формально неточный (rewarded
+      // не ограничен потолком и может увеличить это же число прямо в этом
+      // состоянии); «на паузе» — ближе к правде, не обещает неподвижность.
+      retentionAtCapSuffix: ' · накопление на паузе',
       retentionEmptyLine: '+{n} {word} {verb} в {time}',
       retentionFull:      'Пазлы ждут — играйте!',
       retentionRewardedBtn: 'Открыть ещё +{n} пазлов',
@@ -221,6 +229,9 @@ window.I18N = (function () {
       catLockedDistance: '{n} {word} until unlock — keep playing, or unlock it with a video',
       retentionWaitingLine: 'Puzzles waiting: {n}',
       retentionNextAt:    'plus {n} more at {time}',
+      // ТЗ №22: EN-эквивалент варианта B (см. комментарий у RU-ключа) —
+      // передан смысл «прирост по таймеру приостановлен», не дословно.
+      retentionAtCapSuffix: ' · accumulation paused',
       retentionEmptyLine: '+{n} {word} {verb} at {time}',
       retentionFull:      'Puzzles are waiting — go play!',
       retentionRewardedBtn: 'Unlock +{n} more puzzles',
