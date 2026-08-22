@@ -61,7 +61,12 @@ window.I18N = (function () {
       // ТЗ №09, фаза 4: дистанция («сколько?»), не имя предыдущей категории
       // (ТЗ №08) — отвечает на конкретный вопрос игрока, не знаменатель
       // (общих чисел кампании по-прежнему нигде нет).
-      catLockedDistance: 'Ещё {n} {word} — и откроется',
+      // ТЗ №12, фаза 3 (4-я итерация): «Ещё N — и откроется» читалось как
+      // «пройди ещё N» (доклад основателя), а механика — «откроется само
+      // по таймеру/ролику». Новая строка называет ОБА пути явно: играть
+      // дальше (ничего не делать) или ускорить роликом — без числа общего
+      // объёма кампании (запрет ТЗ №01 остаётся в силе).
+      catLockedDistance: 'Откроется через {n} {word} — играйте или откройте сразу',
       retentionWaitingLine: 'Пазлы ждут: {n}',
       retentionNextAt:    'ещё +{n} в {time}',
       retentionEmptyLine: '+{n} {word} {verb} в {time}',
@@ -207,7 +212,7 @@ window.I18N = (function () {
       shopStreakReward:   'Streak reward',
       shopStreakLocked:   'Unlocks via login streak',
       cosmeticStreakRustName: 'Terracotta',
-      catLockedDistance: '{n} more {word} to unlock',
+      catLockedDistance: 'Opens after {n} more {word} — keep playing, or unlock it now',
       retentionWaitingLine: 'Puzzles waiting: {n}',
       retentionNextAt:    'plus {n} more at {time}',
       retentionEmptyLine: '+{n} {word} {verb} at {time}',

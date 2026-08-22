@@ -461,9 +461,15 @@ window.Platform = (function () {
   // звук/состояние (зовём всегда после закрытия).
   // Фикс 7: если проверка показала, что rewarded недоступен (adblock) —
   // ролик вообще не запускаем, награда выдаётся сразу («бесплатный режим»).
+  // ТЗ №12: «бесплатный режим» — это ЛЮБОЙ случай, когда мы не можем
+  // достоверно показать настоящий ролик, не только adblock. Bridge не
+  // инициализирован (!available) и сбой промиса показа (catch) — тот же
+  // класс: игрок нажал кнопку, обещавшую награду, и не виноват в том, что
+  // площадка не смогла её отработать. Единственная законная причина НЕ
+  // выдать — явный result:false внутри успешно РАЗРЕШИВШЕГОСЯ промиса
+  // (площадка утверждает: ролик показан, но не досмотрен/закрыт игроком).
   function showRewarded(onReward, onClose) {
-    if (!available) { if (onClose) onClose(false); return; }
-    if (!rewardedAvailable) {
+    if (!available || !rewardedAvailable) {
       if (onReward) onReward();
       if (onClose) onClose(true);
       return;
@@ -473,11 +479,19 @@ window.Platform = (function () {
       .then(function (res) {
         var rewarded = res.result === true;
         if (rewarded && onReward) onReward();
+        // Выдача обязана пережить немедленное закрытие/перезагрузку сразу
+        // после ролика (ТЗ №12, доклад основателя: «выдача сохранена» была
+        // ложью — saveProgress() внутри onReward() лишь ставит запись в
+        // обычную 10с-очередь дебаунса адаптера; без форс-флаша здесь она
+        // терялась при быстром уходе со страницы).
+        if (rewarded) vkFlushNow();
         if (onClose) onClose(rewarded);
       })
       .catch(function (e) {
-        console.warn('[Platform] rewarded недоступен:', e);
-        if (onClose) onClose(false);
+        console.warn('[Platform] rewarded недоступен, выдаём бесплатно:', e);
+        if (onReward) onReward();
+        vkFlushNow();
+        if (onClose) onClose(true);
       });
   }
 

@@ -338,15 +338,31 @@ document.addEventListener('DOMContentLoaded', function () {
     var nextAt  = Retention.nextUnlockAtMs(_retentionState, RETENTION_CONFIG);
     var portion = RETENTION_CONFIG.dripPerTick;
     var text;
-    if (nextAt == null) {
-      // накопитель полон
-      text = I18N.t('retentionFull');
-    } else if (waiting > 0) {
+    // ТЗ №12: «waiting > 0» проверяем ПЕРВЫМ. nextAt==null значит только
+    // «накопитель такта полон, время такта стоит» — это НЕ то же самое,
+    // что «ждать нечего»: rewarded специально бьёт накопитель выше потолка
+    // (grantDrip, комментарий в retention.js), и именно тогда nextAt всегда
+    // null. Старый порядок проверок в этом случае прятал число «Пазлы
+    // ждут: N» за généric «играйте!» сразу после честно выданной награды —
+    // с экрана игрока пропадала ЕДИНСТВЕННАЯ строка, подтверждающая, что
+    // ролик что-то дал (доклад основателя, «счётчик исчез с экрана»).
+    if (waiting > 0) {
       var line1 = I18N.t('retentionWaitingLine').replace('{n}', waiting);
-      var line2 = I18N.t('retentionNextAt')
-        .replace('{n}', portion)
-        .replace('{time}', _formatClock(new Date(nextAt)));
-      text = line1 + ' · ' + line2;
+      if (nextAt == null) {
+        // Потолок такта пройден (обычно — ролик) — нечего анонсировать
+        // временем, но число ждущих пазлов всё равно значимо и видимо.
+        text = line1;
+      } else {
+        var line2 = I18N.t('retentionNextAt')
+          .replace('{n}', portion)
+          .replace('{time}', _formatClock(new Date(nextAt)));
+        text = line1 + ' · ' + line2;
+      }
+    } else if (nextAt == null) {
+      // waiting===0 и накопитель полон одновременно на практике не
+      // достижимо (backlog>=cap>0 уже входит в waiting), но не полагаемся
+      // на это молча — безопасный дефолт вместо пустой строки.
+      text = I18N.t('retentionFull');
     } else {
       var word = I18N.pluralRu(portion, [I18N.t('puzzleWordOne'), I18N.t('puzzleWordFew'), I18N.t('puzzleWordMany')]);
       var verb = I18N.pluralRu(portion, [I18N.t('puzzleArriveVerbOne'), I18N.t('puzzleArriveVerbMany'), I18N.t('puzzleArriveVerbMany')]);

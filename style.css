@@ -169,6 +169,12 @@ html, body {
   padding: 8px 16px;
   min-height: 34px;
 }
+/* ТЗ №12: без этого правила атрибут [hidden] (renderRewardedButton(),
+   конец кампании — открывать больше нечего) проигрывает по порядку
+   каскада безусловному display:block выше — на экране оставалась пустая
+   нефункциональная кнопка вместо её исчезновения (тот же класс дефекта,
+   что у .daily-meta, см. build.py transform_index_html_vk). */
+.retention-rewarded-btn[hidden] { display: none; }
 
 .cat-card.is-locked {
   cursor: default;
