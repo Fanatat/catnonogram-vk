@@ -511,8 +511,13 @@ window.Platform = (function () {
   // (showShop) целиком скрывает платные ряды в ВК-сборке, а не просто
   // дизейблит кнопку. Код покупок не удалён — если ВК-платежи когда-нибудь
   // подключат, здесь меняется одно значение.
+  // getPurchases() — контракт {ok, purchases, error} общий с platform.js
+  // (ТЗ №18, refreshCosmeticOwnership вызывается безусловно на каждом
+  // старте для обеих сборок). ok:true/purchases:[] здесь — не сбой, а то
+  // же «покупок нет», что и в dev-режиме Яндекса: платежи на ВК выключены
+  // флагом (paymentsAvailable:false), а не упавшим вызовом.
   function getCatalog()                { return Promise.resolve([]); }
-  function getPurchases()               { return Promise.resolve([]); }
+  function getPurchases()               { return Promise.resolve({ ok: true, purchases: [] }); }
   function purchase(productId)          { return Promise.resolve(null); }
   function consumePurchase(purchaseToken) { return Promise.resolve(); }
 

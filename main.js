@@ -242,7 +242,7 @@ document.addEventListener('DOMContentLoaded', function () {
       updateSoundBtns();
       showMenu();
       Platform.ready();
-      restorePurchases();
+      refreshCosmeticOwnership();
 
       // Сейв пишется целиком со всеми полями (правило студии) — сразу фиксируем
       // результат migrate() (миграция v1 и/или тихая подчистка призрачных
@@ -685,24 +685,70 @@ document.addEventListener('DOMContentLoaded', function () {
     applyThemeClass(cos ? cos.themeClass : '');
   }
 
-  // Восстановление покупок (переустановка/новое устройство): getPurchases()
-  // отдаёт то, что уже оплачено, но могло не попасть в сейв (сбой сети между
-  // purchase() и consumePurchase()). Поле с id товара — ИМЕННО productID,
-  // не id (сверено с докой Yandex Games SDK, sdk-purchases, 25.07.2026;
-  // getCatalog() использует id — это разные структуры, не перепутать).
-  function restorePurchases() {
-    Platform.getPurchases().then(function (purchases) {
-      if (!purchases || !purchases.length) return;
-      var changed = false;
-      purchases.forEach(function (p) {
-        var known = false;
-        for (var i = 0; i < COSMETICS.length; i++) {
-          if (COSMETICS[i].id === p.productID) { known = true; break; }
-        }
-        if (!known) return;
-        if (!_cosmeticsOwned[p.productID]) { _cosmeticsOwned[p.productID] = true; changed = true; }
-        if (p.purchaseToken) Platform.consumePurchase(p.purchaseToken);
+  // Владение КУПЛЕННОЙ косметикой — ПОСТОЯННАЯ покупка (принятая модель
+  // совета): consumePurchase() на ней НЕ вызывается никогда, право
+  // владения — это ответ payments.getPurchases(). Вызывается на КАЖДОМ
+  // старте игры (см. вызов ниже сразу после Platform.load()). Поле id
+  // товара в ответе — ИМЕННО productID, не id (сверено с докой Yandex
+  // Games SDK, sdk-purchases, 25.07.2026; getCatalog() использует id —
+  // это разные структуры).
+  //
+  // Награды серии входов (cos.streakReward) — НЕ товар, getPurchases() их
+  // никогда не вернёт (Яндекс о них не знает), поэтому синк с платформой
+  // их не касается вообще: раз выданные Retention.grantStyle(), они не
+  // отбираются синком владения (см. tools/test_retention_live.js — 3-й
+  // день серии остаётся в сейве и после сброса серии).
+  //
+  // Фолбэк: если getPurchases() упал (сеть/SDK), владение НЕ трогаем —
+  // остаётся локальное зеркало последнего успешного ответа (_cosmeticsOwned
+  // из сейва). Игрок, однажды купивший стиль, не теряет его при плохой сети.
+  // Причину сбоя логируем громко (не глотаем).
+  //
+  // ТЗ №20: площадка БЕЗ покупок (Platform.paymentsAvailable === false,
+  // сейчас ВК) НЕ является источником истины о владении — там покупок нет
+  // вообще, а не «нет покупок у этого игрока». adapters/vk_bridge.js
+  // отвечает {ok:true, purchases:[]} (не ошибка, честная заглушка), и без
+  // этой проверки такой ответ синк трактовал бы как «Яндекс подтвердил:
+  // ничего не куплено» и стирал бы владение — тот же путь срабатывал и
+  // после init-таймаута адаптера (available=false), потому что заглушка
+  // его не проверяет вовсе. Синк имеет смысл только там, где реальный
+  // ответ платформы вообще существует.
+  function refreshCosmeticOwnership() {
+    if (!Platform.paymentsAvailable) return;
+
+    Platform.getPurchases().then(function (res) {
+      if (!res.ok) {
+        console.error('[main] getPurchases() упал — используется локальное зеркало покупок (владение не снимается). Причина:', res.error);
+        return;
+      }
+      var ownedNow = {};
+      COSMETICS.forEach(function (cos) {
+        // Награды серии входов живут вне payments — переносим как есть.
+        if (cos.streakReward && _cosmeticsOwned[cos.id]) ownedNow[cos.id] = true;
       });
+      res.purchases.forEach(function (p) {
+        for (var i = 0; i < COSMETICS.length; i++) {
+          if (COSMETICS[i].id === p.productID && !COSMETICS[i].streakReward) { ownedNow[p.productID] = true; break; }
+        }
+      });
+      var changed = false;
+      COSMETICS.forEach(function (cos) {
+        if (!cos.id || cos.streakReward) return; // база бесплатна/не товар — синку не подлежат
+        if (!!_cosmeticsOwned[cos.id] !== !!ownedNow[cos.id]) changed = true;
+      });
+      // Если снятое владение — это ПРИМЕНЁННАЯ прямо сейчас тема, откат
+      // должен быть виден игроку как событие (тема реально перекрашивается
+      // на экране), а не как расхождение, которое он бы обнаружил только
+      // сам, зайдя в магазин и увидев «Купить» вместо «Убрать» (ТЗ №20).
+      var activeStripped = !!_activeCosmetic && !!_cosmeticsOwned[_activeCosmetic] && !ownedNow[_activeCosmetic];
+      // Ответ Яндекса — новое зеркало для купленной косметики (перезаписываем
+      // целиком): «владеет, если сказал Яндекс», см. постановку.
+      _cosmeticsOwned = ownedNow;
+      if (activeStripped) {
+        _activeCosmetic = '';
+        applyCosmetic('');
+        changed = true;
+      }
       if (changed) saveProgress();
     });
   }
@@ -779,10 +825,27 @@ document.addEventListener('DOMContentLoaded', function () {
         mainBtn.textContent  = I18N.t('shopBuy');
         mainBtn.disabled = true;
       } else {
-        // Цена цифрами + портальная валюта (п.1.13.4) — product.price уже
-        // приходит в таком виде из getCatalog() (сверено с докой).
+        // Цена цифрами + иконка портальной валюты (п.1.13.2/1.13.4) —
+        // product.price уже приходит отформатированным из getCatalog(),
+        // иконку берём из IProduct.getPriceCurrencyImage('small'). Название
+        // и символ валюты своими не заменяем — только то, что дал SDK.
         statusEl.textContent = '';
-        mainBtn.textContent = I18N.t('shopBuy') + ' — ' + product.price;
+        mainBtn.textContent = '';
+        mainBtn.appendChild(document.createTextNode(I18N.t('shopBuy') + ' — ' + product.price + ' '));
+        if (typeof product.getPriceCurrencyImage === 'function') {
+          try {
+            var currencyUrl = product.getPriceCurrencyImage('small');
+            if (currencyUrl) {
+              var currencyImg = document.createElement('img');
+              currencyImg.className = 'shop-currency-icon';
+              currencyImg.src = currencyUrl;
+              currencyImg.alt = '';
+              mainBtn.appendChild(currencyImg);
+            }
+          } catch (e) {
+            console.error('[main] getPriceCurrencyImage ошибка:', e);
+          }
+        }
         mainBtn.disabled = false;
         mainBtn.onclick = function () {
           mainBtn.disabled = true;
@@ -791,11 +854,15 @@ document.addEventListener('DOMContentLoaded', function () {
               mainBtn.disabled = false; // отмена/ошибка — даём попробовать ещё раз
               return;
             }
+            // Покупка навсегда: consumePurchase() на косметике НЕ вызываем
+            // (принятая модель — постоянная покупка). Право владения на
+            // следующих стартах подтвердит getPurchases() (см.
+            // refreshCosmeticOwnership); здесь просто оптимистично
+            // отражаем результат сразу, не дожидаясь рестарта.
             _cosmeticsOwned[cos.id] = true;
             _activeCosmetic = cos.id;
             applyCosmetic(_activeCosmetic);
             saveProgress();
-            if (result.purchaseToken) Platform.consumePurchase(result.purchaseToken);
             showShop();
           });
         };

@@ -897,12 +897,18 @@ html, body {
 }
 
 .shop-item-body {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
 }
 .shop-item-name {
   font-size: 0.95rem;
   color: var(--ink);
+  /* Название гаммы не гарантированно содержит пробелы/дефисы (локали,
+     будущие гаммы) — без этого длинное слово не переносится и вылезает
+     поверх колонки кнопок (см. баг с «Чернильно-синий»). break-word (не
+     anywhere) — переносит только когда реально не помещается, не режет
+     слово раньше времени и не срезает intrinsic-ширину колонки в флексе. */
+  overflow-wrap: break-word;
 }
 .shop-item-status {
   font-size: 0.78rem;
@@ -914,16 +920,22 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  flex-shrink: 0;
+  flex: 0 0 auto;
   width: 104px; /* ТЗ №07, фаза 3.1: фикс. ширина колонки — иначе длинная
     подпись ("Откроется за серию входов") росла в nowrap-кнопке и наезжала
-    на соседний ряд (баг «Терракоты»). */
+    на соседний ряд (баг «Терракоты»). Совместимо с overflow-wrap выше —
+    ширина колонки задана явно, а не выведена из содержимого (ТЗ №18). */
 }
 .shop-item-actions .btn {
-  min-height: 36px; /* тап-таргет пальцем, см. ограничения студии (MIN_TILE 34-36px) */
+  min-height: 44px; /* тап-таргет пальцем — постановка задачи требует ≥44 CSS-px */
   padding: 6px 10px;
   font-size: 0.78rem;
   white-space: normal;
   text-align: center;
   line-height: 1.25;
+}
+.shop-currency-icon {
+  height: 0.9em;
+  width: auto;
+  vertical-align: middle;
 }
