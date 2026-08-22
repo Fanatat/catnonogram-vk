@@ -66,7 +66,9 @@ window.I18N = (function () {
       // по таймеру/ролику». Новая строка называет ОБА пути явно: играть
       // дальше (ничего не делать) или ускорить роликом — без числа общего
       // объёма кампании (запрет ТЗ №01 остаётся в силе).
-      catLockedDistance: 'Откроется через {n} {word} — играйте или откройте сразу',
+      // ТЗ №13, фаза 1: основатель выбрал вариант B из трёх, показанных в
+      // ТЗ №12 (docs/reports/2026-08-22_rewarded_cap.md) — вариант A снят.
+      catLockedDistance: '{n} {word} до открытия — играйте дальше или откройте роликом',
       retentionWaitingLine: 'Пазлы ждут: {n}',
       retentionNextAt:    'ещё +{n} в {time}',
       retentionEmptyLine: '+{n} {word} {verb} в {time}',
@@ -212,7 +214,11 @@ window.I18N = (function () {
       shopStreakReward:   'Streak reward',
       shopStreakLocked:   'Unlocks via login streak',
       cosmeticStreakRustName: 'Terracotta',
-      catLockedDistance: 'Opens after {n} more {word} — keep playing, or unlock it now',
+      // ТЗ №13, фаза 1: EN-эквивалент варианта B (RU текст — прямая
+      // формулировка основателя; EN переведён по смыслу и структуре, не
+      // дословно — «до открытия» = «until unlock», «роликом» = «with a
+      // video», сохранён порядок «сначала число, потом оба пути»).
+      catLockedDistance: '{n} {word} until unlock — keep playing, or unlock it with a video',
       retentionWaitingLine: 'Puzzles waiting: {n}',
       retentionNextAt:    'plus {n} more at {time}',
       retentionEmptyLine: '+{n} {word} {verb} at {time}',

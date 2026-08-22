@@ -4,6 +4,12 @@
   --ink-light: #7a6f65;
   --accent:    #4a7c59;
   --radius:    6px;
+  /* ТЗ №13, фаза 2: узор на фоне — тон чернил темы на 5% непрозрачности
+     поверх бумаги. Формула фиксированная (--pattern-image ниже, задаётся
+     один раз), цвет пересчитан вручную под ink каждой темы (RGB чернил ×
+     0.05 + RGB бумаги × 0.95), чтобы не тянуть color-mix() ради поддержки
+     старых webview. Числа контраста — docs/reports/2026-08-22_polish_debts.md. */
+  --pattern-dot: rgba(43, 39, 35, 0.05);
 }
 
 /* Задача E: косметика — другой цвет чернил, фон "тёплой бумаги" не трогаем.
@@ -13,6 +19,7 @@ html.theme-ink-blue {
   --ink:       #1f2d4a;
   --ink-light: #55637f;
   --accent:    #3d6b96;
+  --pattern-dot: rgba(31, 45, 74, 0.05);
 }
 /* Задача I: ещё две гаммы «тёплой бумаги» — та же схема переменных. */
 html.theme-sepia {
@@ -20,12 +27,14 @@ html.theme-sepia {
   --ink:       #4a3728;
   --ink-light: #8a6f56;
   --accent:    #a3703f;
+  --pattern-dot: rgba(74, 55, 40, 0.05);
 }
 html.theme-graphite {
   --bg:        #e9e7e2;
   --ink:       #2e2e30;
   --ink-light: #6c6c70;
   --accent:    #55606b;
+  --pattern-dot: rgba(46, 46, 48, 0.05);
 }
 /* ТЗ №01: награда за 3-й день серии входов — своя гамма, ОБЯЗАНА
    отличаться от трёх платных выше (бесплатная выдача не дублирует
@@ -41,6 +50,7 @@ html.theme-streak-rust {
   --ink:       #5d2d23;
   --ink-light: #8a5a4c;
   --accent:    #c1533c;
+  --pattern-dot: rgba(93, 45, 35, 0.05);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -49,7 +59,21 @@ html, body {
   width: 100%; height: 100%;
   overflow: hidden;
   overscroll-behavior: none;
-  background: var(--bg);
+  /* ТЗ №13, фаза 2: узор — чистый CSS (repeating-radial-gradient), без
+     файлов-ассетов и внешних запросов. Живёт на body (не на .screen —
+     у экранов нет своей заливки, они прозрачны до этого правила), поэтому
+     сам по себе виден на всех экранах разом; #game ниже перекрывает его
+     собственной сплошной заливкой — на игровом поле узора нет. Вариант —
+     самый сдержанный из 3, показанных основателю на скриншотах
+     (docs/reports/2026-08-22_polish_debts.md); точки радиусом 1px на сетке
+     28px были при рендере визуально неотличимы от чистого фона (1px
+     растеризуется в почти ничего) — это не решило бы жалобу основателя на
+     плоский фон, поэтому первая итерация (радиус 1px/28px) отклонена ДО
+     показа, крупнее круг (1.4px) и чаще сетка (22px) при тех же 5%
+     непрозрачности чернил темы (--pattern-dot) уже устойчиво видны. */
+  background-color: var(--bg);
+  background-image: radial-gradient(circle at center, var(--pattern-dot) 1.4px, transparent 1.8px);
+  background-size: 22px 22px;
   color: var(--ink);
   font-family: Georgia, 'Times New Roman', serif;
 }
@@ -72,8 +96,13 @@ html, body {
   top: 0; left: 0;
   /* ТЗ №10, фаза 1/2 (шаг B) — резерв места под ВК-баннер вместо наезда
      поверх контента. Переменные ставит/снимает adapters/vk_bridge.js
-     (applyBannerReserve) по факту VKWebAppCheckBannerAd/BannerAdUpdated/
-     BannerAdClosedByUser; в источнике и в яндекс-сборке переменных нет —
+     (applyBannerReserve) по факту колбэков проверки/обновления/закрытия
+     баннера площадки (см. VK-адаптер — имена методов не дублируем здесь
+     буквально: build.py check_no_leak сканирует style.css как COMMON_FILE
+     и раньше на этом же тексте падал бы в яндекс-сборке, просто это
+     обнаружилось только сейчас, ТЗ №13, п.3.3 — build.py yandex до
+     pre-commit-хука на этой ветке ни разу не запускался);
+     в источнике и в яндекс-сборке переменных нет —
      0px, .screen как раньше растянут на весь #app, поведение не меняется.
      Явные right/bottom вместо inset:0 — сокращают собственный бокс
      .screen (не padding предка: тот НЕ сжимает containing block
@@ -355,6 +384,10 @@ html, body {
 #game {
   align-items: stretch;
   justify-content: flex-start;
+  /* ТЗ №13, фаза 2: игровое поле — сплошная заливка без узора (сетка
+     нонограммы и так насыщена линиями/числами, узор будет мешать
+     читаемости) — перекрывает узор body непрозрачным --bg того же тона. */
+  background: var(--bg);
 }
 
 .game-head {
