@@ -79,6 +79,11 @@ if (typeof window !== 'undefined') {
 window.Platform = (function () {
   var STORAGE_KEY  = 'nonogram_save';
   var INIT_TIMEOUT = 2500; // мс — после этого уходим в dev-режим
+  // ТЗ №23 v2: молчащий мост (ни .then, ни .catch за showRewarded) оставлял
+  // игрока перед замороженным экраном — onHintClick ставит паузу ДО вызова
+  // и снимает её только в колбэке. Значение — эталон game3/color_sort/
+  // vk_platform.js REWARD_AD_TIMEOUT_MS (число не придумано, Р-Э5).
+  var REWARD_AD_TIMEOUT_MS = 40000;
 
   var available = false;
   // Фикс 7: реклама на ВК по факту ОТДАЁТСЯ (подтверждено на живом устройстве) —
@@ -468,6 +473,19 @@ window.Platform = (function () {
   // площадка не смогла её отработать. Единственная законная причина НЕ
   // выдать — явный result:false внутри успешно РАЗРЕШИВШЕГОСЯ промиса
   // (площадка утверждает: ролик показан, но не досмотрен/закрыт игроком).
+  // Гонка настоящего промиса моста против таймера — natural Promise-
+  // семантика settle-once сама даёт идемпотентность (эталон
+  // game3/color_sort/vk_platform.js withTimeout, тот же приём).
+  function withTimeout(promise, ms) {
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () { reject(new Error('timeout')); }, ms);
+      promise.then(
+        function (v) { clearTimeout(timer); resolve(v); },
+        function (e) { clearTimeout(timer); reject(e); }
+      );
+    });
+  }
+
   function showRewarded(onReward, onClose) {
     if (!available || !rewardedAvailable) {
       if (onReward) onReward();
@@ -475,7 +493,7 @@ window.Platform = (function () {
       return;
     }
     vkFlushNow(); // событие «перед рекламой» — не ждём дебаунса
-    vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'reward' })
+    withTimeout(vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'reward' }), REWARD_AD_TIMEOUT_MS)
       .then(function (res) {
         var rewarded = res.result === true;
         if (rewarded && onReward) onReward();
@@ -488,7 +506,10 @@ window.Platform = (function () {
         if (onClose) onClose(rewarded);
       })
       .catch(function (e) {
-        console.warn('[Platform] rewarded недоступен, выдаём бесплатно:', e);
+        // Тот же .catch() ловит и штатный сбой моста, и таймаут-предохранитель
+        // (withTimeout реджектит по истечении REWARD_AD_TIMEOUT_MS) — оба
+        // исхода по студийному стандарту выдают награду бесплатно.
+        console.warn('[Platform] showRewarded (vk): недоступен/таймаут ' + REWARD_AD_TIMEOUT_MS + 'мс, выдаём бесплатно:', e);
         if (onReward) onReward();
         vkFlushNow();
         if (onClose) onClose(true);
