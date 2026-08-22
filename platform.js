@@ -302,6 +302,26 @@ window.Platform = (function () {
   var BANNER_FALLBACK_WIDTH_PX  = 300; // десктоп, вертикальный баннер — не подтверждено докой, запас
   var BANNER_FALLBACK_HEIGHT_PX = 90;  // мобайл, нижний баннер — не подтверждено докой, запас
 
+  // ТЗ №11, Фаза 1 — ОДИН механизм резервирования, не два. Диагноз ТЗ №11,
+  // п.0: если ВК фактически применил layout_type:'resize' (сам ужал
+  // видимую область страницы под баннер), а мы поверх этого ЕЩЁ добавляем
+  // свой CSS-отступ (Шаг B из ТЗ №10) — место резервируется дважды: колонка
+  // сдвинута, справа мёртвая зона, скроллбар не у края.
+  //
+  // Bridge не подтверждает докой, применил ли он resize (см. честный
+  // комментарий про extractBannerSize ниже) — единственный проверяемый на
+  // живом ВК факт: реально ли сузилось окно. Поэтому режим определяем по
+  // факту (сравнение размера окна до/после показа баннера), а не по тому,
+  // что мы попросили в params.
+  //
+  // _platformReservesSpace=true — площадка сама сузила окно; наш отступ
+  // ВЫКЛЮЧЕН полностью (и Updated-события его больше не включают, пока
+  // баннер жив). false — площадка не резервирует сама (overlay по факту
+  // или resize проигнорирован) — работает только наш отступ, как в ТЗ №10.
+  var _platformReservesSpace = false;
+  var PLATFORM_RESIZE_THRESHOLD_PX = 40; // фильтр шума измерения, заведомо меньше реального баннера
+  var VIEWPORT_SETTLE_MS = 400; // нет докой подтверждённого тайминга — щедрый, но ограниченный бюджет
+
   function isDesktopPlatform() {
     try {
       var p = (new URLSearchParams(location.search)).get('vk_platform') || '';
@@ -316,6 +336,24 @@ window.Platform = (function () {
   function applyBannerReserve(px) {
     var varName = isDesktopPlatform() ? '--vk-banner-reserve-right' : '--vk-banner-reserve-bottom';
     document.documentElement.style.setProperty(varName, Math.max(0, px | 0) + 'px');
+  }
+
+  // Ждёт, пока окно фактически изменит размер (событие resize) либо истечёт
+  // короткий settle-таймаут, затем один раз сообщает актуальный размер.
+  // Нужно, чтобы дать площадке время реально применить layout_type:'resize',
+  // если она это делает — иначе решение "резервировать самим или нет"
+  // принимается раньше, чем платформа успела ужать окно.
+  function waitForViewportSettle(desktop, cb) {
+    var done = false;
+    function finish() {
+      if (done) return;
+      done = true;
+      window.removeEventListener('resize', onResize);
+      cb(desktop ? window.innerWidth : window.innerHeight);
+    }
+    function onResize() { finish(); }
+    window.addEventListener('resize', onResize);
+    setTimeout(finish, VIEWPORT_SETTLE_MS);
   }
 
   // Читает ширину/высоту из ответа VKWebAppCheckBannerAd или данных
@@ -337,6 +375,7 @@ window.Platform = (function () {
   function showBannerAd() {
     if (!available || _bannerClosedByUser) return;
     var desktop = isDesktopPlatform();
+    var beforeSize = desktop ? window.innerWidth : window.innerHeight;
     var params = desktop
       ? { layout_type: 'resize', banner_align: 'right', orientation: 'vertical' } // Шаг A
       : { banner_location: 'bottom' };
@@ -345,16 +384,35 @@ window.Platform = (function () {
     // просто нет баннера, что уже фактически "не мешает").
     vkBridge.send('VKWebAppShowBannerAd', params)
       .then(function () {
-        // Резерв СРАЗУ по запасному размеру (Шаг B, оптимистично) — не
-        // ждём VKWebAppBannerAdUpdated, чтобы не было окна, где баннер уже
-        // показан, а карточки ещё не подвинуты (тот самый баг ТЗ №10).
+        // Оптимистично, СРАЗУ по запасному размеру (ТЗ №10, шаг B) — не
+        // ждём подтверждения факта resize, чтобы не было окна, где баннер
+        // уже показан, а карточки ещё не подвинуты (тот самый баг ТЗ №10).
+        // Считаем overlay безопасным дефолтом; если ниже выяснится, что
+        // площадка сама ужала окно, — отступ будет снят (ТЗ №11, Фаза 1).
+        _platformReservesSpace = false;
         applyBannerReserve(desktop ? BANNER_FALLBACK_WIDTH_PX : BANNER_FALLBACK_HEIGHT_PX);
         // VKWebAppCheckBannerAd при старте (ТЗ №10, шаг B) — уточняет
         // резерв реальным размером, если Bridge его отдаёт.
         vkBridge.send('VKWebAppCheckBannerAd').then(function (res) {
+          if (_platformReservesSpace) return; // площадка уже подтверждена — не перетираем 0
           var size = extractBannerSize(res);
           if (size) applyBannerReserve(desktop ? size.width : size.height);
         }).catch(function () { /* остаёмся на запасном размере */ });
+
+        // Параллельно — ТЗ №11, Фаза 1: проверяем ФАКТ (сравнение размера
+        // окна до/после показа баннера), не ужала ли площадка окно сама.
+        // Если да — наш отступ ОБЯЗАН быть снят, иначе получится двойное
+        // резервирование (диагноз ТЗ №11, п.0). Решение окончательное —
+        // применяется поверх любого значения, выставленного выше.
+        waitForViewportSettle(desktop, function (afterSize) {
+          var shrinkPx = beforeSize - afterSize;
+          _platformReservesSpace = shrinkPx >= PLATFORM_RESIZE_THRESHOLD_PX;
+          if (_platformReservesSpace) {
+            applyBannerReserve(0);
+            console.log('[Platform] баннер: площадка сама ужала окно (' +
+              beforeSize + 'px -> ' + afterSize + 'px), свой отступ выключен.');
+          }
+        });
       })
       .catch(function (e) {
         console.warn('[Platform] баннер недоступен:', e);
@@ -366,15 +424,21 @@ window.Platform = (function () {
       if (!e || !e.detail) return;
       // VKWebAppBannerAdClosedByUser — игрок сам закрыл баннер крестиком;
       // больше не переоткрываем эту сессию (уважение + меньше жалоб) и
-      // снимаем резерв — раскладка возвращается (ТЗ №10, шаг B).
+      // снимаем резерв — раскладка возвращается (ТЗ №10, шаг B). Если до
+      // этого резервировала площадка сама (Фаза 1 ТЗ №11) — applyBannerReserve(0)
+      // здесь безопасный no-op (мы и так ничего не резервировали).
       if (e.detail.type === 'VKWebAppBannerAdClosedByUser') {
         _bannerClosedByUser = true;
+        _platformReservesSpace = false;
         applyBannerReserve(0);
       }
       // VKWebAppBannerAdUpdated — уточняем резерв реальным размером
-      // (ТЗ №10, шаг B). Молчим, если размер не распознан — остаёмся на
-      // том, что уже выставлено (запасной или предыдущий реальный).
+      // (ТЗ №10, шаг B). ТЗ №11: если площадка резервирует место сама —
+      // НЕ дублируем её отступ своим, иначе снова двойное резервирование.
+      // Молчим, если размер не распознан — остаёмся на том, что уже
+      // выставлено (запасной или предыдущий реальный).
       if (e.detail.type === 'VKWebAppBannerAdUpdated') {
+        if (_platformReservesSpace) return;
         var size = extractBannerSize(e.detail.data);
         if (size) applyBannerReserve(isDesktopPlatform() ? size.width : size.height);
       }
