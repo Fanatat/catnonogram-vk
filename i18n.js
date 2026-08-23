@@ -54,6 +54,43 @@ window.I18N = (function () {
       shopRemove:         'Выключить',
       shopBuy:            'Купить',
       shopDefault:        'Бесплатно',
+      // ТЗ №01: модуль удержания
+      shopStreakReward:   'Награда за серию',
+      shopStreakLocked:   'Откроется за серию входов',
+      cosmeticStreakRustName: 'Терракота',
+      // ТЗ №09, фаза 4: дистанция («сколько?»), не имя предыдущей категории
+      // (ТЗ №08) — отвечает на конкретный вопрос игрока, не знаменатель
+      // (общих чисел кампании по-прежнему нигде нет).
+      // ТЗ №12, фаза 3 (4-я итерация): «Ещё N — и откроется» читалось как
+      // «пройди ещё N» (доклад основателя), а механика — «откроется само
+      // по таймеру/ролику». Новая строка называет ОБА пути явно: играть
+      // дальше (ничего не делать) или ускорить роликом — без числа общего
+      // объёма кампании (запрет ТЗ №01 остаётся в силе).
+      // ТЗ №13, фаза 1: основатель выбрал вариант B из трёх, показанных в
+      // ТЗ №12 (docs/reports/2026-08-22_rewarded_cap.md) — вариант A снят.
+      catLockedDistance: '{n} {word} до открытия — играйте дальше или откройте роликом',
+      retentionWaitingLine: 'Пазлы ждут: {n}',
+      retentionNextAt:    'ещё +{n} в {time}',
+      // ТЗ №21/22: подпись предела такта раздатчика — показывается ТОЛЬКО
+      // когда backlog реально на потолке (main.js renderRetentionDripLine).
+      // Из трёх вариантов, отснятых кадрами на приёмку (docs/reports/
+      // 2026-08-22_max_label.md), основатель выбрал вариант B (ТЗ №22):
+      // «(макс.)» отмечен в Фазе 0 ТЗ №21 как формально неточный (rewarded
+      // не ограничен потолком и может увеличить это же число прямо в этом
+      // состоянии); «на паузе» — ближе к правде, не обещает неподвижность.
+      retentionAtCapSuffix: ' · накопление на паузе',
+      retentionEmptyLine: '+{n} {word} {verb} в {time}',
+      retentionFull:      'Пазлы ждут — играйте!',
+      retentionRewardedBtn: 'Открыть ещё +{n} пазлов',
+      puzzleWordOne:      'пазл',
+      puzzleWordFew:      'пазла',
+      puzzleWordMany:     'пазлов',
+      puzzleArriveVerbOne: 'появится',
+      puzzleArriveVerbMany: 'появятся',
+      retentionStreakLine:'Серия входов: {n} из {m}',
+      retentionRewardHints:'+{n} подсказки бесплатно — серия входов!',
+      retentionRewardStyle:'Новый стиль открыт — серия входов!',
+      retentionRewardDrip: 'Открыт новый пазл!',
       cross:    'Крест',
       diamond:  'Ромб',
       heart:    'Сердце',
@@ -181,6 +218,32 @@ window.I18N = (function () {
       shopRemove:         'Disable',
       shopBuy:            'Buy',
       shopDefault:        'Free',
+      // ТЗ №01: retention module
+      shopStreakReward:   'Streak reward',
+      shopStreakLocked:   'Unlocks via login streak',
+      cosmeticStreakRustName: 'Terracotta',
+      // ТЗ №13, фаза 1: EN-эквивалент варианта B (RU текст — прямая
+      // формулировка основателя; EN переведён по смыслу и структуре, не
+      // дословно — «до открытия» = «until unlock», «роликом» = «with a
+      // video», сохранён порядок «сначала число, потом оба пути»).
+      catLockedDistance: '{n} {word} until unlock — keep playing, or unlock it with a video',
+      retentionWaitingLine: 'Puzzles waiting: {n}',
+      retentionNextAt:    'plus {n} more at {time}',
+      // ТЗ №22: EN-эквивалент варианта B (см. комментарий у RU-ключа) —
+      // передан смысл «прирост по таймеру приостановлен», не дословно.
+      retentionAtCapSuffix: ' · accumulation paused',
+      retentionEmptyLine: '+{n} {word} {verb} at {time}',
+      retentionFull:      'Puzzles are waiting — go play!',
+      retentionRewardedBtn: 'Unlock +{n} more puzzles',
+      puzzleWordOne:      'puzzle',
+      puzzleWordFew:      'puzzles',
+      puzzleWordMany:     'puzzles',
+      puzzleArriveVerbOne: 'arrives',
+      puzzleArriveVerbMany: 'arrive',
+      retentionStreakLine:'Login streak: {n} of {m}',
+      retentionRewardHints:'+{n} free hints — login streak!',
+      retentionRewardStyle:'New style unlocked — login streak!',
+      retentionRewardDrip: 'A new puzzle unlocked!',
       cross:    'Cross',
       diamond:  'Diamond',
       heart:    'Heart',
@@ -276,6 +339,18 @@ window.I18N = (function () {
     return dict[key] != null ? dict[key] : key;
   }
 
+  // ТЗ №08: порция раздатчика (константа конфига, не «сколько ждёт» — то
+  // остаётся без склонения, см. main.js) озвучивается честным числом и
+  // должна согласовываться по-русски (1 пазл / 2-4 пазла / 5+ пазлов).
+  // forms = [one, few, many] — уже переведённые слова (I18N.t(...) вызывает
+  // сторона).
+  function pluralRu(n, forms) {
+    var mod10 = n % 10, mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return forms[0];
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return forms[1];
+    return forms[2];
+  }
+
   // Проставляет переводы во все элементы с атрибутом data-i18n.
   function apply(root) {
     var nodes = (root || document).querySelectorAll('[data-i18n]');
@@ -285,5 +360,5 @@ window.I18N = (function () {
     document.documentElement.lang = current;
   }
 
-  return { pick: pick, t: t, apply: apply, get current() { return current; } };
+  return { pick: pick, t: t, apply: apply, pluralRu: pluralRu, get current() { return current; } };
 })();

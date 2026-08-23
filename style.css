@@ -4,6 +4,15 @@
   --ink-light: #7a6f65;
   --accent:    #4a7c59;
   --radius:    6px;
+  /* ТЗ №13, фаза 2 → ТЗ №14, фаза 1: узор на фоне — тон чернил темы поверх
+     бумаги. 5% (ТЗ №13) основатель счёл слишком слабым («точки появились,
+     нравится, но слишком слабо заметны») — проявленность даёт
+     непрозрачность, а не радиус/шаг сетки (те не менялись). Поднято до 9%
+     (средний из показанных 7/9/11%, см. docs/reports/2026-08-22_pattern_v2.md).
+     Формула фиксированная (--pattern-image ниже, задаётся один раз), цвет
+     пересчитан вручную под ink каждой темы (RGB чернил × 0.09 + RGB бумаги
+     × 0.91), чтобы не тянуть color-mix() ради поддержки старых webview. */
+  --pattern-dot: rgba(43, 39, 35, 0.09);
 }
 
 /* Задача E: косметика — другой цвет чернил, фон "тёплой бумаги" не трогаем.
@@ -13,6 +22,7 @@ html.theme-ink-blue {
   --ink:       #1f2d4a;
   --ink-light: #55637f;
   --accent:    #3d6b96;
+  --pattern-dot: rgba(31, 45, 74, 0.09);
 }
 /* Задача I: ещё две гаммы «тёплой бумаги» — та же схема переменных. */
 html.theme-sepia {
@@ -20,12 +30,30 @@ html.theme-sepia {
   --ink:       #4a3728;
   --ink-light: #8a6f56;
   --accent:    #a3703f;
+  --pattern-dot: rgba(74, 55, 40, 0.09);
 }
 html.theme-graphite {
   --bg:        #e9e7e2;
   --ink:       #2e2e30;
   --ink-light: #6c6c70;
   --accent:    #55606b;
+  --pattern-dot: rgba(46, 46, 48, 0.09);
+}
+/* ТЗ №01: награда за 3-й день серии входов — своя гамма, ОБЯЗАНА
+   отличаться от трёх платных выше (бесплатная выдача не дублирует
+   ассортимент магазина, см. retention.js/main.js grantStyle).
+   ТЗ №03, Фаза 2: --ink затемнён (было #7a3b2e, контраст 157.4 — ниже
+   всех трёх платных, минимум Sepia 164.6). Тот же тон (H≈10°, тёплый
+   красно-коричневый), просто темнее — HSL(10°,45%,25%) вместо
+   HSL(10°,45%,33%), не сдвинут в сторону Sepia (H≈26°) или Graphite
+   (насыщенность ≈0%). Перезамер тем же скриптом — см. отчёт
+   docs/reports/2026-08-20_retention_prerelease.md. */
+html.theme-streak-rust {
+  --bg:        #f3ead6;
+  --ink:       #5d2d23;
+  --ink-light: #8a5a4c;
+  --accent:    #c1533c;
+  --pattern-dot: rgba(93, 45, 35, 0.09);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -34,7 +62,21 @@ html, body {
   width: 100%; height: 100%;
   overflow: hidden;
   overscroll-behavior: none;
-  background: var(--bg);
+  /* ТЗ №13, фаза 2: узор — чистый CSS (repeating-radial-gradient), без
+     файлов-ассетов и внешних запросов. Живёт на body (не на .screen —
+     у экранов нет своей заливки, они прозрачны до этого правила), поэтому
+     сам по себе виден на всех экранах разом; #game ниже перекрывает его
+     собственной сплошной заливкой — на игровом поле узора нет. Вариант —
+     самый сдержанный из 3, показанных основателю на скриншотах
+     (docs/reports/2026-08-22_polish_debts.md); точки радиусом 1px на сетке
+     28px были при рендере визуально неотличимы от чистого фона (1px
+     растеризуется в почти ничего) — это не решило бы жалобу основателя на
+     плоский фон, поэтому первая итерация (радиус 1px/28px) отклонена ДО
+     показа, крупнее круг (1.4px) и чаще сетка (22px) при тех же 5%
+     непрозрачности чернил темы (--pattern-dot) уже устойчиво видны. */
+  background-color: var(--bg);
+  background-image: radial-gradient(circle at center, var(--pattern-dot) 1.4px, transparent 1.8px);
+  background-size: 22px 22px;
   color: var(--ink);
   font-family: Georgia, 'Times New Roman', serif;
 }
@@ -53,7 +95,28 @@ html, body {
 }
 
 .screen {
-  position: absolute; inset: 0;
+  position: absolute;
+  top: 0; left: 0;
+  /* ТЗ №10, фаза 1/2 (шаг B) — резерв места под ВК-баннер вместо наезда
+     поверх контента. Переменные ставит/снимает adapters/vk_bridge.js
+     (applyBannerReserve) по факту колбэков проверки/обновления/закрытия
+     баннера площадки (см. VK-адаптер — имена методов не дублируем здесь
+     буквально: build.py check_no_leak сканирует style.css как COMMON_FILE
+     и раньше на этом же тексте падал бы в яндекс-сборке, просто это
+     обнаружилось только сейчас, ТЗ №13, п.3.3 — build.py yandex до
+     pre-commit-хука на этой ветке ни разу не запускался);
+     в источнике и в яндекс-сборке переменных нет —
+     0px, .screen как раньше растянут на весь #app, поведение не меняется.
+     Явные right/bottom вместо inset:0 — сокращают собственный бокс
+     .screen (не padding предка: тот НЕ сжимает containing block
+     абсолютно спозиционированных потомков, проверено живым прогоном),
+     поэтому flex-центрирование (align-items/justify-content ниже) само
+     центрирует портретную колонку в ОСТАВШЕЙСЯ области — без правок
+     разметки экранов. safe-area (фаза 2, низ на мобиле) добавляется, а
+     не заменяет резерв. */
+  right: var(--vk-banner-reserve-right, 0px);
+  bottom: calc(var(--vk-banner-reserve-bottom, 0px) + env(safe-area-inset-bottom, 0px));
+  transition: right 0.2s ease, bottom 0.2s ease;
   display: none;
   flex-direction: column;
   align-items: center;
@@ -114,6 +177,69 @@ html, body {
   padding: 2px 6px;
 }
 
+/* ---- ТЗ №01: модуль удержания (только ВК-сборка, узлы вставляет
+   build.py transform_index_html_vk — в общем index.html их нет) ---- */
+
+/* Постоянная строка — не модалка, не перекрывает кнопки (п. приёмки:
+   видна целиком на 320px, в т.ч. горизонтально). */
+.retention-line {
+  font-size: 0.8rem;
+  color: var(--ink-light);
+  text-align: center;
+  max-width: 280px;
+  line-height: 1.3;
+}
+#retention-streak-line { margin-top: 6px; }
+#retention-drip-line   { margin-bottom: 8px; }
+
+/* ТЗ №09, фаза 3 — rewarded «Открыть ещё +N», рядом со строкой раздатчика.
+   Меньше и тише основной кнопки «Играть» — вторична по иерархии. */
+.retention-rewarded-btn {
+  display: block;
+  margin: 0 auto 16px;
+  font-size: 0.85rem;
+  padding: 8px 16px;
+  min-height: 34px;
+}
+/* ТЗ №12: без этого правила атрибут [hidden] (renderRewardedButton(),
+   конец кампании — открывать больше нечего) проигрывает по порядку
+   каскада безусловному display:block выше — на экране оставалась пустая
+   нефункциональная кнопка вместо её исчезновения (тот же класс дефекта,
+   что у .daily-meta, см. build.py transform_index_html_vk). */
+.retention-rewarded-btn[hidden] { display: none; }
+
+.cat-card.is-locked {
+  cursor: default;
+  opacity: 0.55;
+}
+.cat-card.is-locked:active { background: transparent; }
+.cat-card.is-locked .cat-name,
+.cat-card.is-locked:active .cat-name { color: var(--ink); }
+.cat-lock-icon {
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+
+/* Всплывающий отклик на выдачу награды (п.2.4) — короткий, ненавязчивый,
+   сам прячется, не блокирует ввод (не overlay/модалка). */
+.retention-toast {
+  position: absolute;
+  left: 50%; top: 14px;
+  transform: translateX(-50%);
+  max-width: 90%;
+  padding: 8px 16px;
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  text-align: center;
+  pointer-events: none;
+  z-index: 50;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.retention-toast.is-visible { opacity: 1; }
+
 /* Кнопка звука */
 #btn-sound-menu {
   position: absolute;
@@ -154,7 +280,13 @@ html, body {
 .build-tag {
   position: absolute;
   left: max(8px, env(safe-area-inset-left));
-  bottom: max(8px, env(safe-area-inset-bottom));
+  /* ТЗ №10: .build-tag живёт ВНЕ .screen (см. комментарий выше) — резерв
+     .screen на bottom (мобильный баннер) его не задевает автоматически,
+     как задевает всё остальное внутри .screen. Тот же --vk-banner-
+     reserve-bottom нужен и здесь явно, иначе плашка окажется под
+     баннером — ровно то, что это ТЗ и просило не допустить. */
+  bottom: calc(max(8px, env(safe-area-inset-bottom)) + var(--vk-banner-reserve-bottom, 0px));
+  transition: bottom 0.2s ease;
   font-size: 0.65rem;
   color: var(--ink-light);
   opacity: 0.35;
@@ -255,6 +387,12 @@ html, body {
 #game {
   align-items: stretch;
   justify-content: flex-start;
+  /* ТЗ №14, фаза 2: раньше здесь была сплошная заливка var(--bg), которая
+     гасила узор на ВСЁМ игровом экране (в т.ч. шапку и поля вокруг доски) —
+     основатель указал, что это лишнее: узор нужен вокруг доски, как и на
+     остальных экранах, узор body просвечивает здесь без изменений. Только
+     сама доска непрозрачна — см. .puzzle ниже, её граница = граница
+     заливки, никакой лишней "наклейки". */
 }
 
 .game-head {
@@ -295,6 +433,13 @@ html, body {
   grid-template-columns: var(--clue-col-w) auto;
   grid-template-rows: auto auto;
   touch-action: none;
+  /* ТЗ №14, фаза 2: доска (числа-подсказки + сетка клеток) — непрозрачная
+     подложка, узор на ней мешал бы читаемости сетки (регресс ТЗ №13
+     сохраняется). Фон именно на .puzzle (не на .puzzle-container с его
+     padding:12px вокруг) — грид занимает ровно свой контент без отступов,
+     поэтому край заливки в точности совпадает с краем доски, без эффекта
+     "наклейки". */
+  background: var(--bg);
 }
 
 .puzzle-tl       { grid-area: tl; }
@@ -603,6 +748,7 @@ html, body {
   color: var(--bg);
 }
 .hint-btn {
+  position: relative;
   max-width: 190px;
   border: 2px solid var(--ink-light);
   background: transparent;
@@ -612,6 +758,27 @@ html, body {
 .hint-btn:disabled {
   opacity: 0.35;
   cursor: default;
+}
+/* ТЗ №03, Фаза 1: видимый баланс бонусных подсказок (награда 2-го дня
+   серии входов, ТЗ №01 — до этого жила только 3с тоста и пропадала).
+   pointer-events:none — бейдж никогда не перехватывает тап, весь клик
+   уходит на саму кнопку. Смещение -6/-7px внутрь запаса паддинга
+   .mode-bar (min 16px справа) — не уходит за экран на 320×568/568×320. */
+.hint-badge {
+  position: absolute;
+  top: -7px;
+  right: -6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+  pointer-events: none;
 }
 
 /* ---- Экран календаря ---- */
@@ -730,12 +897,18 @@ html, body {
 }
 
 .shop-item-body {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
 }
 .shop-item-name {
   font-size: 0.95rem;
   color: var(--ink);
+  /* Название гаммы не гарантированно содержит пробелы/дефисы (локали,
+     будущие гаммы) — без этого длинное слово не переносится и вылезает
+     поверх колонки кнопок (см. баг с «Чернильно-синий»). break-word (не
+     anywhere) — переносит только когда реально не помещается, не режет
+     слово раньше времени и не срезает intrinsic-ширину колонки в флексе. */
+  overflow-wrap: break-word;
 }
 .shop-item-status {
   font-size: 0.78rem;
@@ -747,11 +920,22 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  flex-shrink: 0;
+  flex: 0 0 auto;
+  width: 104px; /* ТЗ №07, фаза 3.1: фикс. ширина колонки — иначе длинная
+    подпись ("Откроется за серию входов") росла в nowrap-кнопке и наезжала
+    на соседний ряд (баг «Терракоты»). Совместимо с overflow-wrap выше —
+    ширина колонки задана явно, а не выведена из содержимого (ТЗ №18). */
 }
 .shop-item-actions .btn {
-  min-height: 36px; /* тап-таргет пальцем, см. ограничения студии (MIN_TILE 34-36px) */
-  padding: 6px 12px;
-  font-size: 0.8rem;
-  white-space: nowrap;
+  min-height: 44px; /* тап-таргет пальцем — постановка задачи требует ≥44 CSS-px */
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.25;
+}
+.shop-currency-icon {
+  height: 0.9em;
+  width: auto;
+  vertical-align: middle;
 }

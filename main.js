@@ -59,6 +59,44 @@ document.addEventListener('DOMContentLoaded', function () {
   var _cosmeticsOwned  = {};  // { productId: true } — куплено навсегда (Задача E)
   var _activeCosmetic  = '';  // id включённой косметики либо '' (дефолтная тема)
 
+  // ТЗ №01: модуль удержания. maxReachedIndex/bonusHints/retention — см.
+  // save.js emptySave() (там же смысл каждого поля). retentionState —
+  // распакованный (decodeState) вид retention для рантайма; сериализуется
+  // обратно в payload только в saveProgress().
+  var _maxReachedIndex = -1;
+  var _bonusHints      = 0;
+  var _retentionState  = null;
+
+  // Конфиг модуля (ТЗ №01, п.2.6) — колбэки замыкают состояние ИГРЫ,
+  // сам retention.js про LEVELS/COSMETICS ничего не знает. typeof-проверка:
+  // в яндекс-сборке retention.js не подключён (build.py, только VK) —
+  // весь блок ниже должен молча не выполняться, а не падать.
+  var RETENTION_TICK_MS = 6 * 60 * 60 * 1000; // такт раздатчика (боевой, 6ч)
+
+  var RETENTION_CONFIG = (typeof Retention !== 'undefined') ? Retention.mergeConfig({
+    tickMs: RETENTION_TICK_MS,
+    // ТЗ №08: «1 пазл в 6 часов» ощущался как дефицит, не пейсинг. Порция
+    // 1->6, потолок 4->24 (= сутки полного простоя без потерь). Такт
+    // (6 часов) не меняется. Числа утверждены основателем явно.
+    dripPerTick: 6,
+    accumulatorCap: 24,
+    hintsRewardCount: 2, // п.2.3: «2-й день — подсказки (число задаётся конфигом)»
+    callbacks: {
+      totalLevels:     function ()  { return LEVELS.length; },
+      isCompleted:     function (i) { return !!_completedLevels[i]; },
+      maxReachedIndex: function ()  { return _maxReachedIndex; },
+      grantHints: function (n) {
+        _bonusHints += n;
+        updateHintBadge();
+        showRetentionToast(I18N.t('retentionRewardHints').replace('{n}', n));
+      },
+      grantStyle: function (id) {
+        if (!_cosmeticsOwned[id]) _cosmeticsOwned[id] = true;
+        showRetentionToast(I18N.t('retentionRewardStyle'));
+      },
+    },
+  }) : null;
+
   // Задача I: реестр гамм. themeClass='' — базовая бесплатная тема (текущая
   // тёплая бумага), её applyCosmetic просто снимает все остальные классы.
   // swatchBg/swatchInk — превью-цвета КАРТОЧКИ в магазине (не var(--…),
@@ -72,9 +110,18 @@ document.addEventListener('DOMContentLoaded', function () {
       free: false, swatchBg: '#ece0c8', swatchInk: '#4a3728' },
     { id: 'cosmetic_graphite', themeClass: 'theme-graphite', nameKey: 'cosmeticGraphiteName',
       free: false, swatchBg: '#e9e7e2', swatchInk: '#2e2e30' },
+    // ТЗ №01, п.2.3: награда 3-го дня серии входов. НЕ продаётся (нет в
+    // магазине как товар) — только выдаётся Retention (grantStyle),
+    // отмечена streakReward:true, чтобы buildShopItemRow() не рисовал
+    // кнопку «Купить» для того, что купить нельзя.
+    { id: 'cosmetic_streak_rust', themeClass: 'theme-streak-rust', nameKey: 'cosmeticStreakRustName',
+      free: false, streakReward: true, swatchBg: '#f3ead6', swatchInk: '#7a3b2e' },
   ];
   var COSMETIC_UNLOCK_LEVELS  = 3; // разблокировка МАГАЗИНА после N пройденных уровней
-  var SAVE_SIZE_GUARD_BYTES   = 150000; // 75% от лимита Яндекса 200КБ (сверено с доками)
+  // Байтовый лимит сейва — площадка-специфичный (Platform.SAVE_SIZE_GUARD_
+  // BYTES, задан в platform.js/adapters/vk_bridge.js), общий код своего
+  // значения не держит (ТЗ №01, п.1.1: два разных числа под одним именем —
+  // сведены к одному источнику истины).
 
   /* ---- Звук ---- */
 
@@ -133,6 +180,11 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('dev-badge').hidden = false;
     }
 
+    // ТЗ №09, фаза 1: сти́ки-баннер — сразу после init, живёт на всех
+    // экранах (один показ на сессию, не по экрану). Только ВК —
+    // Platform.showBannerAd не существует в яндекс-сборке (platform.js).
+    if (Platform.showBannerAd) Platform.showBannerAd();
+
     Platform.load().then(function (data) {
       // Миграция/нормализация сейва живёт в save.js — main.js только раскладывает
       // результат по переменным состояния (см. migrate() для деталей формата v1).
@@ -150,6 +202,24 @@ document.addEventListener('DOMContentLoaded', function () {
       _cosmeticsOwned  = migrated.cosmeticsOwned;
       _activeCosmetic  = migrated.activeCosmetic;
       applyCosmetic(_activeCosmetic);
+
+      _maxReachedIndex = migrated.maxReachedIndex;
+      _bonusHints      = migrated.bonusHints;
+      updateHintBadge(); // возвращающийся игрок мог накопить баланс ДО этой сессии
+      if (typeof Retention !== 'undefined') {
+        var _nowRet = Platform.now().getTime();
+        _retentionState = Retention.isValidEncoded(migrated.retention)
+          ? Retention.decodeState(migrated.retention)
+          : Retention.initState(_maxReachedIndex, _nowRet, RETENTION_CONFIG);
+        // Раздатчик мог накопить такты, пока игра не запускалась.
+        _retentionState = Retention.applyDripTick(_retentionState, _nowRet, RETENTION_CONFIG);
+        // День засчитывается фактом входа (п.2.3), не прохождением уровня —
+        // зовём один раз на старте сессии, до первого показа экранов.
+        var _entryResult = Retention.onEnter(_retentionState, Retention.dayKeyFromDate(Platform.now()), RETENTION_CONFIG);
+        _retentionState = _entryResult.state;
+        if (_entryResult.reward === 'hints') RETENTION_CONFIG.callbacks.grantHints(RETENTION_CONFIG.hintsRewardCount);
+        else if (_entryResult.reward === 'style') RETENTION_CONFIG.callbacks.grantStyle('cosmetic_streak_rust');
+      }
 
       // Восстанавливаем только дни текущего локального месяца
       var _nowLoad = Platform.now();
@@ -172,7 +242,7 @@ document.addEventListener('DOMContentLoaded', function () {
       updateSoundBtns();
       showMenu();
       Platform.ready();
-      restorePurchases();
+      refreshCosmeticOwnership();
 
       // Сейв пишется целиком со всеми полями (правило студии) — сразу фиксируем
       // результат migrate() (миграция v1 и/или тихая подчистка призрачных
@@ -203,10 +273,185 @@ document.addEventListener('DOMContentLoaded', function () {
       dailyBoardDate:  _dailyBoardDate,
       cosmeticsOwned:  _cosmeticsOwned,
       activeCosmetic:  _activeCosmetic,
+      maxReachedIndex: _maxReachedIndex,
+      bonusHints:      _bonusHints,
+      retention:       (typeof Retention !== 'undefined' && _retentionState)
+                          ? Retention.encodeState(_retentionState) : null,
     };
     // Сторож байтов (ЖЁСТКОЕ ОГРАНИЧЕНИЕ задания): при риске переполнения
-    // лимита Яндекса (200КБ/игрока) вытесняет boardStates, никогда прогресс.
-    Platform.save(Save.enforceSizeGuard(payload, SAVE_SIZE_GUARD_BYTES));
+    // площадка-специфичного лимита (Platform.SAVE_SIZE_GUARD_BYTES) вытесняет
+    // boardStates, никогда прогресс.
+    Platform.save(Save.enforceSizeGuard(payload, Platform.SAVE_SIZE_GUARD_BYTES));
+  }
+
+  /* ---- ТЗ №01: модуль удержания — рантайм-обвязка ----
+     retention.js сам ничего не знает про DOM/Platform/LEVELS (см. заголовок
+     файла) — весь мост здесь. Каждая функция начинается с typeof-проверки,
+     чтобы в яндекс-сборке (retention.js не подключён) всё было тихим no-op,
+     а не ReferenceError (тот же приём, что showDailyGame()/DAILY_LEVELS,
+     ТЗ №01 п.1.5). */
+
+  var _retentionToastTimer = null;
+
+  function showRetentionToast(text) {
+    var el = document.getElementById(RETENTION_CONFIG.domSlots.rewardToast);
+    if (!el) return;
+    el.textContent = text;
+    el.hidden = false;
+    // requestAnimationFrame — чтобы .hidden->false и добавление класса не
+    // схлопнулись в один кадр (иначе CSS-transition не сыграет).
+    requestAnimationFrame(function () { el.classList.add('is-visible'); });
+    if (_retentionToastTimer) clearTimeout(_retentionToastTimer);
+    _retentionToastTimer = setTimeout(function () {
+      el.classList.remove('is-visible');
+      setTimeout(function () { el.hidden = true; }, 260); // дождаться transition
+    }, 3200);
+  }
+
+  // Продвигает раздатчик на текущий момент; при реальной выдаче — сохраняет
+  // и показывает отклик (п.2.4: тихих улучшений не бывает). Дёшево вызывать
+  // часто (showMenu/showCategory) — если тактов не набежало, no-op.
+  function retentionTick() {
+    if (typeof Retention === 'undefined' || !_retentionState) return;
+    var before = _retentionState.dripOpened;
+    _retentionState = Retention.applyDripTick(_retentionState, Platform.now().getTime(), RETENTION_CONFIG);
+    if (_retentionState.dripOpened > before) {
+      saveProgress();
+      var granted = _retentionState.dripOpened - before;
+      showRetentionToast(granted === 1
+        ? I18N.t('retentionRewardDrip')
+        : I18N.t('retentionRewardDrip') + ' (' + granted + ')');
+    }
+  }
+
+  // Строка раздатчика (экран категорий) — ТЗ №07 фаза 1 / ТЗ №08 фаза 2.
+  // Продаёт изобилие, время — обещание сверху, не главное сообщение. Порция
+  // теперь честно озвучивается числом (ТЗ №08: «1 пазл в 6ч» ощущался как
+  // дефицит — молчать о порции больше не вариант). Запрет: без общего числа
+  // уровней и без числа закрытых, только «сколько ждёт» и точное время
+  // (ТЗ №01, требование остаётся в силе).
+  function renderRetentionDripLine() {
+    if (!_retentionState) return;
+    var el = document.getElementById(RETENTION_CONFIG.domSlots.dripLine);
+    if (!el) return;
+    var waiting = Retention.openUnfinishedCount(_retentionState, RETENTION_CONFIG);
+    var nextAt  = Retention.nextUnlockAtMs(_retentionState, RETENTION_CONFIG);
+    var portion = RETENTION_CONFIG.dripPerTick;
+    var text;
+    // ТЗ №12: «waiting > 0» проверяем ПЕРВЫМ. nextAt==null значит только
+    // «накопитель такта полон, время такта стоит» — это НЕ то же самое,
+    // что «ждать нечего»: rewarded специально бьёт накопитель выше потолка
+    // (grantDrip, комментарий в retention.js), и именно тогда nextAt всегда
+    // null. Старый порядок проверок в этом случае прятал число «Пазлы
+    // ждут: N» за généric «играйте!» сразу после честно выданной награды —
+    // с экрана игрока пропадала ЕДИНСТВЕННАЯ строка, подтверждающая, что
+    // ролик что-то дал (доклад основателя, «счётчик исчез с экрана»).
+    if (waiting > 0) {
+      var line1 = I18N.t('retentionWaitingLine').replace('{n}', waiting);
+      if (nextAt == null) {
+        // Потолок такта пройден (обычно — ролик) — нечего анонсировать
+        // временем, но число ждущих пазлов всё равно значимо и видимо.
+        // ТЗ №21: пометка «на потолке» — ТОЛЬКО в этом состоянии (это и
+        // есть условие «раздатчик реально на потолке», см. отчёт Фазы 0).
+        // Не «максимум» в буквальном смысле — rewarded (grantDrip) не
+        // ограничен accumulatorCap и может увеличить это же число дальше
+        // прямо в этом состоянии; текст суффикса подобран так, чтобы не
+        // обещать неподвижность там, где её нет.
+        text = line1 + I18N.t('retentionAtCapSuffix');
+      } else {
+        var line2 = I18N.t('retentionNextAt')
+          .replace('{n}', portion)
+          .replace('{time}', _formatClock(new Date(nextAt)));
+        text = line1 + ' · ' + line2;
+      }
+    } else if (nextAt == null) {
+      // waiting===0 и накопитель полон одновременно на практике не
+      // достижимо (backlog>=cap>0 уже входит в waiting), но не полагаемся
+      // на это молча — безопасный дефолт вместо пустой строки.
+      text = I18N.t('retentionFull');
+    } else {
+      var word = I18N.pluralRu(portion, [I18N.t('puzzleWordOne'), I18N.t('puzzleWordFew'), I18N.t('puzzleWordMany')]);
+      var verb = I18N.pluralRu(portion, [I18N.t('puzzleArriveVerbOne'), I18N.t('puzzleArriveVerbMany'), I18N.t('puzzleArriveVerbMany')]);
+      text = I18N.t('retentionEmptyLine')
+        .replace('{n}', portion)
+        .replace('{word}', word)
+        .replace('{verb}', verb)
+        .replace('{time}', _formatClock(new Date(nextAt)));
+    }
+    el.textContent = text;
+  }
+
+  // Кнопка «Открыть ещё +N» (экран категорий) — ТЗ №09, фаза 3. Отдельный
+  // кран от такта раздатчика (см. Retention.grantDrip — не ограничен
+  // потолком накопителя, только концом кампании). Без кулдауна и гейтов
+  // частоты — rewarded показывается КАЖДЫЙ клик (стандарт 26.07: кулдауны
+  // только для непрошеной рекламы). Подпись не обещает ролик — только
+  // результат.
+  function renderRewardedButton() {
+    if (!_retentionState) return;
+    var btn = document.getElementById(RETENTION_CONFIG.domSlots.rewardedBtn);
+    if (!btn) return;
+    var fullyOpen = Retention.isCampaignFullyUnlocked(_retentionState, RETENTION_CONFIG);
+    // Простота > хитрые условия (ТЗ №09 п.3): видна всегда, пока есть что
+    // открывать — не завязана на то, доигран ли стартовый запас.
+    btn.hidden = fullyOpen;
+    if (fullyOpen) return;
+    btn.textContent = I18N.t('retentionRewardedBtn').replace('{n}', RETENTION_CONFIG.dripPerTick);
+  }
+
+  function onRewardedButtonClick() {
+    Sound.resumeContext();
+    // Реклама недоступна (adblock/нет филла) -> Platform.showRewarded зовёт
+    // onReward сразу же, бесплатно (см. adapters/vk_bridge.js) — кнопка не
+    // прячется и не блокируется на время показа (п.190, шрам Color Sort).
+    Platform.showRewarded(function onReward() {
+      var before = _retentionState.dripOpened;
+      _retentionState = Retention.grantDrip(_retentionState, RETENTION_CONFIG, RETENTION_CONFIG.dripPerTick);
+      var granted = _retentionState.dripOpened - before;
+      if (granted > 0) {
+        saveProgress();
+        showRetentionToast(granted === 1
+          ? I18N.t('retentionRewardDrip')
+          : I18N.t('retentionRewardDrip') + ' (' + granted + ')');
+      }
+    }, function onClose() {
+      renderRetentionDripLine();
+      renderRewardedButton();
+    });
+  }
+
+  // Строка серии (главный экран) — п.2.3, видна ПОСТОЯННО (не hidden).
+  function renderRetentionStreakLine() {
+    if (!_retentionState) return;
+    var el = document.getElementById(RETENTION_CONFIG.domSlots.streakLine);
+    if (!el) return;
+    var shown = Math.min(_retentionState.streakLen, RETENTION_CONFIG.streakThreshold);
+    el.textContent = I18N.t('retentionStreakLine')
+      .replace('{n}', shown).replace('{m}', RETENTION_CONFIG.streakThreshold);
+  }
+
+  // ТЗ №03, Фаза 1: видимый баланс бонусных подсказок (находка ТЗ №02 —
+  // награда 2-го дня жила только 3с тоста и пропадала бесследно). Общий
+  // код (main.js — файл общий для Яндекса и ВК), но функционально в
+  // Яндекс-сборке инертна: _bonusHints там всегда 0, потому что retention.js
+  // (единственный, кто зовёт grantHints) в яндекс-билд не входит — badge
+  // остаётся hidden с самой разметки и никогда не отображается. Без
+  // знаменателя (только число, без «из N») — п.2.4/«ЧЕГО НЕ ДЕЛАТЬ» ТЗ №01.
+  function updateHintBadge() {
+    var badge = document.getElementById('hint-badge');
+    if (!badge) return;
+    if (_bonusHints > 0) {
+      badge.textContent = String(_bonusHints);
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  }
+
+  function _formatClock(d) {
+    var hh = ('0' + d.getHours()).slice(-2);
+    var mm = ('0' + d.getMinutes()).slice(-2);
+    return hh + ':' + mm;
   }
 
   /* ---- Ежедневный режим: дата → индекс ---- */
@@ -311,10 +556,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
   /* ---- Гарантированный interstitial (Задача D) ---- */
   // Не полагаемся на скрытый частотный лимит SDK — считаем сами: пробуем
-  // показать каждый 2-й пройденный уровень (кампания и ежедневный вместе),
-  // и не чаще, чем раз в 75 с реального времени (требование: кулдаун 60-90с,
-  // 75с — середина диапазона). На время показа звук и игра на паузе.
-  var INTERSTITIAL_LEVEL_INTERVAL = 2;
+  // показать каждый 6-й пройденный уровень (кампания и ежедневный вместе;
+  // ТЗ №09 фаза 2 — было 2, реже по решению основателя), и не чаще, чем раз
+  // в 75 с реального времени (требование: кулдаун 60-90с, 75с — середина
+  // диапазона, из ТЗ №09 не менялось). На время показа звук и игра на паузе.
+  var INTERSTITIAL_LEVEL_INTERVAL = 6;
   var INTERSTITIAL_COOLDOWN_MS    = 75000;
   var _levelsSinceInterstitial    = 0;
   var _lastInterstitialAt         = 0;
@@ -375,6 +621,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function showMenu() {
     showScreen('menu');
+    retentionTick();
+    if (typeof Retention !== 'undefined') renderRetentionStreakLine();
 
     var btnContinue = document.getElementById('btn-continue');
     var hasContinue = (_lastLevelIndex >= 0);
@@ -411,7 +659,15 @@ document.addEventListener('DOMContentLoaded', function () {
       showCalendar();
     };
 
-    document.getElementById('btn-shop').onclick = function () {
+    // ТЗ №07, фаза 3.2: до гейта (COSMETIC_UNLOCK_LEVELS пройдено) экран
+    // магазина — одна строка про гейт и пустота, ничего не продаёт и
+    // выглядит сломанным. Дешевле скрыть пункт меню, чем рисовать силуэты
+    // товаров — согласуется со стандартом «витрина выводится из
+    // возможности» (см. фазу 3.3).
+    var btnShop = document.getElementById('btn-shop');
+    var shopUnlocked = Object.keys(_completedLevels).length >= COSMETIC_UNLOCK_LEVELS;
+    btnShop.hidden = !shopUnlocked;
+    btnShop.onclick = function () {
       Sound.resumeContext();
       showShop();
     };
@@ -435,24 +691,70 @@ document.addEventListener('DOMContentLoaded', function () {
     applyThemeClass(cos ? cos.themeClass : '');
   }
 
-  // Восстановление покупок (переустановка/новое устройство): getPurchases()
-  // отдаёт то, что уже оплачено, но могло не попасть в сейв (сбой сети между
-  // purchase() и consumePurchase()). Поле с id товара — ИМЕННО productID,
-  // не id (сверено с докой Yandex Games SDK, sdk-purchases, 25.07.2026;
-  // getCatalog() использует id — это разные структуры, не перепутать).
-  function restorePurchases() {
-    Platform.getPurchases().then(function (purchases) {
-      if (!purchases || !purchases.length) return;
-      var changed = false;
-      purchases.forEach(function (p) {
-        var known = false;
-        for (var i = 0; i < COSMETICS.length; i++) {
-          if (COSMETICS[i].id === p.productID) { known = true; break; }
-        }
-        if (!known) return;
-        if (!_cosmeticsOwned[p.productID]) { _cosmeticsOwned[p.productID] = true; changed = true; }
-        if (p.purchaseToken) Platform.consumePurchase(p.purchaseToken);
+  // Владение КУПЛЕННОЙ косметикой — ПОСТОЯННАЯ покупка (принятая модель
+  // совета): consumePurchase() на ней НЕ вызывается никогда, право
+  // владения — это ответ payments.getPurchases(). Вызывается на КАЖДОМ
+  // старте игры (см. вызов ниже сразу после Platform.load()). Поле id
+  // товара в ответе — ИМЕННО productID, не id (сверено с докой Yandex
+  // Games SDK, sdk-purchases, 25.07.2026; getCatalog() использует id —
+  // это разные структуры).
+  //
+  // Награды серии входов (cos.streakReward) — НЕ товар, getPurchases() их
+  // никогда не вернёт (Яндекс о них не знает), поэтому синк с платформой
+  // их не касается вообще: раз выданные Retention.grantStyle(), они не
+  // отбираются синком владения (см. tools/test_retention_live.js — 3-й
+  // день серии остаётся в сейве и после сброса серии).
+  //
+  // Фолбэк: если getPurchases() упал (сеть/SDK), владение НЕ трогаем —
+  // остаётся локальное зеркало последнего успешного ответа (_cosmeticsOwned
+  // из сейва). Игрок, однажды купивший стиль, не теряет его при плохой сети.
+  // Причину сбоя логируем громко (не глотаем).
+  //
+  // ТЗ №20: площадка БЕЗ покупок (Platform.paymentsAvailable === false,
+  // сейчас ВК) НЕ является источником истины о владении — там покупок нет
+  // вообще, а не «нет покупок у этого игрока». adapters/vk_bridge.js
+  // отвечает {ok:true, purchases:[]} (не ошибка, честная заглушка), и без
+  // этой проверки такой ответ синк трактовал бы как «Яндекс подтвердил:
+  // ничего не куплено» и стирал бы владение — тот же путь срабатывал и
+  // после init-таймаута адаптера (available=false), потому что заглушка
+  // его не проверяет вовсе. Синк имеет смысл только там, где реальный
+  // ответ платформы вообще существует.
+  function refreshCosmeticOwnership() {
+    if (!Platform.paymentsAvailable) return;
+
+    Platform.getPurchases().then(function (res) {
+      if (!res.ok) {
+        console.error('[main] getPurchases() упал — используется локальное зеркало покупок (владение не снимается). Причина:', res.error);
+        return;
+      }
+      var ownedNow = {};
+      COSMETICS.forEach(function (cos) {
+        // Награды серии входов живут вне payments — переносим как есть.
+        if (cos.streakReward && _cosmeticsOwned[cos.id]) ownedNow[cos.id] = true;
       });
+      res.purchases.forEach(function (p) {
+        for (var i = 0; i < COSMETICS.length; i++) {
+          if (COSMETICS[i].id === p.productID && !COSMETICS[i].streakReward) { ownedNow[p.productID] = true; break; }
+        }
+      });
+      var changed = false;
+      COSMETICS.forEach(function (cos) {
+        if (!cos.id || cos.streakReward) return; // база бесплатна/не товар — синку не подлежат
+        if (!!_cosmeticsOwned[cos.id] !== !!ownedNow[cos.id]) changed = true;
+      });
+      // Если снятое владение — это ПРИМЕНЁННАЯ прямо сейчас тема, откат
+      // должен быть виден игроку как событие (тема реально перекрашивается
+      // на экране), а не как расхождение, которое он бы обнаружил только
+      // сам, зайдя в магазин и увидев «Купить» вместо «Убрать» (ТЗ №20).
+      var activeStripped = !!_activeCosmetic && !!_cosmeticsOwned[_activeCosmetic] && !ownedNow[_activeCosmetic];
+      // Ответ Яндекса — новое зеркало для купленной косметики (перезаписываем
+      // целиком): «владеет, если сказал Яндекс», см. постановку.
+      _cosmeticsOwned = ownedNow;
+      if (activeStripped) {
+        _activeCosmetic = '';
+        applyCosmetic('');
+        changed = true;
+      }
       if (changed) saveProgress();
     });
   }
@@ -498,7 +800,8 @@ document.addEventListener('DOMContentLoaded', function () {
     mainBtn.className = 'btn btn-primary';
 
     if (owned) {
-      statusEl.textContent = cos.free ? I18N.t('shopDefault') : I18N.t('shopOwned');
+      statusEl.textContent = cos.free ? I18N.t('shopDefault')
+        : (cos.streakReward ? I18N.t('shopStreakReward') : I18N.t('shopOwned'));
       mainBtn.textContent  = I18N.t(applied ? 'shopRemove' : 'shopApply');
       mainBtn.disabled = false;
       mainBtn.onclick = function () {
@@ -507,6 +810,12 @@ document.addEventListener('DOMContentLoaded', function () {
         saveProgress();
         showShop(); // перерисовать метки кнопок под новое состояние
       };
+    } else if (cos.streakReward) {
+      // ТЗ №01, п.2.3: НЕ товар — покупке не подлежит ни при каком catalogMap,
+      // выдаётся только Retention.grantStyle() за 3-й день серии входов.
+      statusEl.textContent = I18N.t('shopStreakLocked');
+      mainBtn.textContent  = I18N.t('shopStreakLocked');
+      mainBtn.disabled = true;
     } else if (!catalogMap) {
       // Каталог ещё не пришёл — не крашим, просто ждём (см. showShop).
       statusEl.textContent = I18N.t('shopLoading');
@@ -522,10 +831,27 @@ document.addEventListener('DOMContentLoaded', function () {
         mainBtn.textContent  = I18N.t('shopBuy');
         mainBtn.disabled = true;
       } else {
-        // Цена цифрами + портальная валюта (п.1.13.4) — product.price уже
-        // приходит в таком виде из getCatalog() (сверено с докой).
+        // Цена цифрами + иконка портальной валюты (п.1.13.2/1.13.4) —
+        // product.price уже приходит отформатированным из getCatalog(),
+        // иконку берём из IProduct.getPriceCurrencyImage('small'). Название
+        // и символ валюты своими не заменяем — только то, что дал SDK.
         statusEl.textContent = '';
-        mainBtn.textContent = I18N.t('shopBuy') + ' — ' + product.price;
+        mainBtn.textContent = '';
+        mainBtn.appendChild(document.createTextNode(I18N.t('shopBuy') + ' — ' + product.price + ' '));
+        if (typeof product.getPriceCurrencyImage === 'function') {
+          try {
+            var currencyUrl = product.getPriceCurrencyImage('small');
+            if (currencyUrl) {
+              var currencyImg = document.createElement('img');
+              currencyImg.className = 'shop-currency-icon';
+              currencyImg.src = currencyUrl;
+              currencyImg.alt = '';
+              mainBtn.appendChild(currencyImg);
+            }
+          } catch (e) {
+            console.error('[main] getPriceCurrencyImage ошибка:', e);
+          }
+        }
         mainBtn.disabled = false;
         mainBtn.onclick = function () {
           mainBtn.disabled = true;
@@ -534,11 +860,15 @@ document.addEventListener('DOMContentLoaded', function () {
               mainBtn.disabled = false; // отмена/ошибка — даём попробовать ещё раз
               return;
             }
+            // Покупка навсегда: consumePurchase() на косметике НЕ вызываем
+            // (принятая модель — постоянная покупка). Право владения на
+            // следующих стартах подтвердит getPurchases() (см.
+            // refreshCosmeticOwnership); здесь просто оптимистично
+            // отражаем результат сразу, не дожидаясь рестарта.
             _cosmeticsOwned[cos.id] = true;
             _activeCosmetic = cos.id;
             applyCosmetic(_activeCosmetic);
             saveProgress();
-            if (result.purchaseToken) Platform.consumePurchase(result.purchaseToken);
             showShop();
           });
         };
@@ -576,7 +906,17 @@ document.addEventListener('DOMContentLoaded', function () {
 
     lockedEl.hidden = true;
     listEl.innerHTML = '';
-    COSMETICS.forEach(function (cos) {
+    // ТЗ №07, фаза 3.3: платежи на ВК не подключены (Platform.paymentsAvailable
+    // === false) — состояние «витрина видна, купить нельзя» обязано быть
+    // невыразимым (стандарт студии 18.08), поэтому платные ряды (не free,
+    // не streakReward) в такой сборке не рисуются вовсе, а не дизейблятся.
+    // Код покупок не удалён — на Яндексе (paymentsAvailable:true) ряды
+    // остаются, поведение не меняется.
+    var shownCosmetics = Platform.paymentsAvailable
+      ? COSMETICS
+      : COSMETICS.filter(function (cos) { return cos.free || cos.streakReward; });
+
+    shownCosmetics.forEach(function (cos) {
       listEl.appendChild(buildShopItemRow(cos, null)); // null = каталог ещё не пришёл
     });
 
@@ -585,7 +925,7 @@ document.addEventListener('DOMContentLoaded', function () {
       var catalogMap = {};
       catalog.forEach(function (p) { catalogMap[p.id] = p; });
       listEl.innerHTML = '';
-      COSMETICS.forEach(function (cos) {
+      shownCosmetics.forEach(function (cos) {
         listEl.appendChild(buildShopItemRow(cos, catalogMap));
       });
     });
@@ -593,12 +933,29 @@ document.addEventListener('DOMContentLoaded', function () {
 
   /* ---- Экран выбора сложнос��и ---- */
 
+  // Первый уровень категории, который одновременно ОТКРЫТ замком и не
+  // пройден. null, если такого нет (категория либо вся пройдена, либо вся
+  // заперта раздатчиком) — ТЗ №01.
+  function firstOpenUnfinishedIn(cat) {
+    for (var i = 0; i < cat.indices.length; i++) {
+      var idx = cat.indices[i];
+      if (!_completedLevels[idx] && Retention.isLevelOpen(idx, _retentionState, RETENTION_CONFIG)) return idx;
+    }
+    return null;
+  }
+
   function showCategory() {
+    retentionTick();
     showScreen('category');
     document.querySelector('#category [data-i18n="chooseLevel"]').textContent =
       I18N.t('chooseLevel');
     document.getElementById('category-total').textContent =
       I18N.t('levelsAvailable');
+    if (typeof Retention !== 'undefined') {
+      renderRetentionDripLine();
+      renderRewardedButton();
+      document.getElementById(RETENTION_CONFIG.domSlots.rewardedBtn).onclick = onRewardedButtonClick;
+    }
 
     var list = document.getElementById('category-list');
     list.innerHTML = '';
@@ -608,18 +965,46 @@ document.addEventListener('DOMContentLoaded', function () {
       var total = cat.indices.length;
       var allDone = (done === total);
 
+      // ТЗ №01: категория «заперта», если в ней есть непройденное, но
+      // ничего из непройденного пока не открыто раздатчиком. В яндекс-
+      // сборке (Retention не подключён) замка нет вообще — locked всегда false.
+      var openTarget = (typeof Retention !== 'undefined') ? firstOpenUnfinishedIn(cat) : firstUnfinishedIn(cat);
+      var locked = (typeof Retention !== 'undefined') && !allDone && openTarget === null;
+
       var card = document.createElement('button');
-      card.className = 'cat-card';
+      card.className = 'cat-card' + (locked ? ' is-locked' : '');
 
       var nameEl = document.createElement('span');
       nameEl.className = 'cat-name';
       nameEl.textContent = I18N.t(cat.key);
 
       var progEl = document.createElement('span');
-      progEl.className = 'cat-progress' + (allDone ? ' is-done' : '');
-      progEl.textContent = allDone
-        ? I18N.t('catProgressAllDone')
-        : (done > 0 ? I18N.t('catProgressDone').replace('{n}', done) : I18N.t('catProgressNone'));
+      // Запрет (ТЗ №01, п.2.2): взаперти — без «X из Y» (знаменателя, общих
+      // чисел кампании), только замок. ТЗ №09, фаза 4 — санкционированное
+      // исключение из «без чисел»: дистанция (числитель без знаменателя,
+      // «скрытое будущее») отвечает на «сколько?», а не на «сколько всего»
+      // — той же природы, что и раздатчик (ТЗ №07/№08). allDone/обычный
+      // прогресс — как раньше.
+      if (locked) {
+        progEl.className = 'cat-progress cat-lock-icon';
+        // N = индекс первого уровня категории минус текущая граница
+        // открытого (Retention.dripBoundary — старт+раздатчик). Пересчитывается
+        // при каждом показе экрана (showCategory зовётся заново), поэтому
+        // уменьшается от игры, раздатчика И rewarded-кнопки одинаково — все
+        // трое просто двигают dripOpened/maxReachedIndex, которые эта
+        // формула читает напрямую, отдельного счётчика для N не заведено.
+        // Math.max(1, …) — защитный пол: для по-настоящему запертой
+        // категории N не может быть <=0 (иначе она не была бы заперта, см.
+        // firstOpenUnfinishedIn), но не полагаемся на это молча.
+        var n = Math.max(1, cat.indices[0] - Retention.dripBoundary(_retentionState, RETENTION_CONFIG));
+        var word = I18N.pluralRu(n, [I18N.t('puzzleWordOne'), I18N.t('puzzleWordFew'), I18N.t('puzzleWordMany')]);
+        progEl.textContent = '🔒 ' + I18N.t('catLockedDistance').replace('{n}', n).replace('{word}', word);
+      } else {
+        progEl.className = 'cat-progress' + (allDone ? ' is-done' : '');
+        progEl.textContent = allDone
+          ? I18N.t('catProgressAllDone')
+          : (done > 0 ? I18N.t('catProgressDone').replace('{n}', done) : I18N.t('catProgressNone'));
+      }
 
       card.appendChild(nameEl);
       card.appendChild(progEl);
@@ -636,14 +1021,18 @@ document.addEventListener('DOMContentLoaded', function () {
         card.appendChild(howtoBtn);
       }
 
-      card.addEventListener('click', function () {
-        var startIdx = firstUnfinishedIn(cat);
-        if (!_onboardingSeen && catIdx === 0) {
-          showOnboarding(function () { showGame(startIdx); });
-        } else {
-          showGame(startIdx);
-        }
-      });
+      if (locked) {
+        card.disabled = true;
+      } else {
+        card.addEventListener('click', function () {
+          var startIdx = allDone ? firstUnfinishedIn(cat) : openTarget;
+          if (!_onboardingSeen && catIdx === 0) {
+            showOnboarding(function () { showGame(startIdx); });
+          } else {
+            showGame(startIdx);
+          }
+        });
+      }
 
       list.appendChild(card);
     });
@@ -780,6 +1169,11 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   function showDailyGame() {
+    // ТЗ №01, п.1.5: DAILY_LEVELS не входит в ВК-сборку (build.py,
+    // YANDEX_ONLY_FILES) — путь недостижим (кнопка/календарь скрыты
+    // build.py), но обращение к необъявленному глобалу было бы
+    // ReferenceError, если кнопку когда-нибудь покажут без возврата файла.
+    if (typeof DAILY_LEVELS === 'undefined') { showMenu(); return; }
     var idx   = _dailyIndex();
     var level = DAILY_LEVELS[idx];
     if (!level) { showMenu(); return; }
@@ -854,9 +1248,22 @@ document.addEventListener('DOMContentLoaded', function () {
     var level = LEVELS[levelIndex];
     if (!level) { showCategory(); return; }
 
+    // ТЗ №01: замок — авторитетная проверка именно здесь (не только в
+    // клик-хендлерах экрана категорий), потому что «Продолжить»/следующий
+    // уровень после победы могут целиться в ещё не открытый раздатчиком
+    // индекс (следующий элемент категории не обязан быть уже разблокирован).
+    if (typeof Retention !== 'undefined' && !Retention.isLevelOpen(levelIndex, _retentionState, RETENTION_CONFIG)) {
+      showCategory();
+      return;
+    }
+
     _currentLevel   = levelIndex;
     _lastLevelIndex = levelIndex;  // всегда обновляем для «Продолжить»
     _inDailyGame    = false;
+    // Монотонный «докуда добрался» для правила 2 замка (ТЗ №01) — НЕ то же
+    // самое, что _lastLevelIndex (тот может двигаться нелинейно между
+    // категориями, см. onWin). Открывать/запирать это поле умеет только расти.
+    if (typeof Retention !== 'undefined') _maxReachedIndex = Math.max(_maxReachedIndex, levelIndex);
 
     document.getElementById('win-overlay').hidden = true;
     document.getElementById('confetti-container').innerHTML = '';
@@ -953,6 +1360,22 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('btn-hint').disabled = true;
       return;
     }
+
+    // ТЗ №01, п.2.4/«ЧЕГО НЕ ДЕЛАТЬ»: бонусные подсказки за серию входов —
+    // отдельный бесплатный баланс, а не свой гейт частоты рекламы. Тратим
+    // ПЕРВЫМИ, без обращения к Platform.showRewarded вообще (не «экономим»
+    // рекламный показ игрока — просто эта подсказка не рекламная).
+    if (_bonusHints > 0) {
+      _bonusHints--;
+      updateHintBadge();
+      Nonogram.applyHint(hint);
+      saveProgress();
+      if (!Nonogram.findHint()) {
+        document.getElementById('btn-hint').disabled = true;
+      }
+      return;
+    }
+
     var pendingHint = null;
     if (_currentLevel >= 0) flushBoardSave(_currentLevel);
     Sound.suspend();

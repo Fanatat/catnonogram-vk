@@ -45,6 +45,16 @@ var VK_WRITE_LIMIT_PER_HOUR  = 1000;  // dev.vk.com: лимит VKWebAppStorageS
 var VK_SOFT_BRAKE_THRESHOLD  = 700;   // с этого количества/час начинаем тормозить
 var VK_MAX_DEBOUNCE_MS       = 60000; // потолок паузы вплотную к лимиту
 
+// 3500 байт: инженерный бюджет студии, подтверждён решением основателя
+// 22.08.2026 (ТЗ №13, п.3.5). Реальный лимит ВК первоисточником не
+// подтверждён (вторичные источники называют около 4КБ и более жёсткую
+// границу для сериализованных объектов — 3500 взято с запасом от этой
+// оценки); при появлении официальной цифры на dev.vk.com — пересмотреть.
+// Больше долгом не числится. Единственный источник истины для байтового
+// лимита сейва (см. save.js enforceSizeGuard) — общий код (main.js) его
+// не задаёт.
+var VK_SAVE_SIZE_GUARD_BYTES = 3500;
+
 // Выбрасывает из лога отметки времени старше скользящего часа. Чистая
 // функция — возвращает НОВЫЙ массив, не мутирует переданный.
 function vkPruneWriteLog(writeLog, nowMs) {
@@ -69,6 +79,11 @@ if (typeof window !== 'undefined') {
 window.Platform = (function () {
   var STORAGE_KEY  = 'nonogram_save';
   var INIT_TIMEOUT = 2500; // мс — после этого уходим в dev-режим
+  // ТЗ №23 v2: молчащий мост (ни .then, ни .catch за showRewarded) оставлял
+  // игрока перед замороженным экраном — onHintClick ставит паузу ДО вызова
+  // и снимает её только в колбэке. Значение — эталон game3/color_sort/
+  // vk_platform.js REWARD_AD_TIMEOUT_MS (число не придумано, Р-Э5).
+  var REWARD_AD_TIMEOUT_MS = 40000;
 
   var available = false;
   // Фикс 7: реклама на ВК по факту ОТДАЁТСЯ (подтверждено на живом устройстве) —
@@ -236,8 +251,204 @@ window.Platform = (function () {
       });
   }
 
-  // Ежедневный режим не входит в VK-порт — часы устройства без подмены.
-  function now() { return new Date(); }
+  // ТЗ №01, п.3.1: по образцу яндексовского platform.js. На платформе —
+  // ВСЕГДА реальные часы устройства (?fakeDate игнорируется, даже если
+  // случайно окажется в URL хостинга — available=true на боевом ВК, эту
+  // ветку игрок обойти не может). Вне платформы (dev/приёмка) допускаем
+  // ?fakeDate=YYYY-MM-DD в query — без этого нельзя проверить серию
+  // входов/раздатчик за один присест, не дожидаясь реальной полуночи.
+  function now() {
+    if (available) return new Date();
+    try {
+      var params = new URLSearchParams(window.location.search);
+      var fake = params.get('fakeDate');
+      if (fake && /^\d{4}-\d{2}-\d{2}$/.test(fake)) {
+        var p = fake.split('-');
+        var d = new Date(+p[0], +p[1] - 1, +p[2]);
+        if (!isNaN(d.getTime())) return d;
+      }
+    } catch (e) { /* падать нельзя */ }
+    return new Date();
+  }
+
+  /* ---------------------------------------------------------------
+     ТЗ №09/№10 — сти́ки-баннер (VKWebAppShowBannerAd). Параметры сверены
+     с докой базы «Баннерная реклама для VK» (VK_banner_doc_dlya_CC.md,
+     передана советом дословно). ТЗ №10: живой заход основателя показал,
+     что overlay накрывает карточки категорий — 'overlay' по смыслу и
+     означает «поверх». Водопад режимов (ТЗ №10, диагноз п.0):
+       Шаг A — десктоп: layout_type:'resize' вместо 'overlay' (в доке
+         подтверждён только для мобильного приложения; для десктопа
+         поддержка НЕ подтверждена первоисточником — заказываем, но не
+         полагаемся на него одного).
+       Шаг B — ГАРАНТИРОВАННЫЙ, не зависит от того, послушал ли VK шаг A:
+         остаёмся на факте (баннер может визуально оставаться overlay),
+         но САМИ резервируем место игровому контейнеру по РЕАЛЬНЫМ
+         размерам баннера (VKWebAppCheckBannerAd при старте +
+         VKWebAppBannerAdUpdated на изменения) через CSS-переменные
+         --vk-banner-reserve-right/--vk-banner-reserve-bottom (style.css,
+         #app). Портретная колонка сама центрируется в оставшейся ширине
+         (#app padding сдвигает containing block у .screen{inset:0} —
+         правки в main.js/screen-разметке не нужны).
+     Платформа читается из launch-параметра vk_platform (та же техника,
+     что getLang() уже использует для vk_language из URL). desktop_web/
+     desktop_app -> десктоп, всё остальное -> мобайл.
+
+     ЧЕСТНО (как и в ТЗ №09 про сам вид баннера): точная схема полей
+     VKWebAppCheckBannerAd/VKWebAppBannerAdUpdated (какими именами приходит
+     ширина/высота) не подтверждена ни одной локальной докой — dev.vk.com
+     недоступен из этой сети. extractBannerSize() ниже читает несколько
+     правдоподобных имён полей и, если ни одно не подошло, откатывается на
+     задокументированный запасной размер (с запасом, чтобы не воспроизвести
+     тот же баг — лучше зарезервировать чуть больше места, чем перекрыть
+     карточки повторно). Живая проверка реальных значений — на основателе.
+     --------------------------------------------------------------- */
+  var _bannerClosedByUser = false; // сброс каждой загрузкой страницы — «до следующей сессии»
+  var BANNER_FALLBACK_WIDTH_PX  = 300; // десктоп, вертикальный баннер — не подтверждено докой, запас
+  var BANNER_FALLBACK_HEIGHT_PX = 90;  // мобайл, нижний баннер — не подтверждено докой, запас
+
+  // ТЗ №11, Фаза 1 — ОДИН механизм резервирования, не два. Диагноз ТЗ №11,
+  // п.0: если ВК фактически применил layout_type:'resize' (сам ужал
+  // видимую область страницы под баннер), а мы поверх этого ЕЩЁ добавляем
+  // свой CSS-отступ (Шаг B из ТЗ №10) — место резервируется дважды: колонка
+  // сдвинута, справа мёртвая зона, скроллбар не у края.
+  //
+  // Bridge не подтверждает докой, применил ли он resize (см. честный
+  // комментарий про extractBannerSize ниже) — единственный проверяемый на
+  // живом ВК факт: реально ли сузилось окно. Поэтому режим определяем по
+  // факту (сравнение размера окна до/после показа баннера), а не по тому,
+  // что мы попросили в params.
+  //
+  // _platformReservesSpace=true — площадка сама сузила окно; наш отступ
+  // ВЫКЛЮЧЕН полностью (и Updated-события его больше не включают, пока
+  // баннер жив). false — площадка не резервирует сама (overlay по факту
+  // или resize проигнорирован) — работает только наш отступ, как в ТЗ №10.
+  var _platformReservesSpace = false;
+  var PLATFORM_RESIZE_THRESHOLD_PX = 40; // фильтр шума измерения, заведомо меньше реального баннера
+  var VIEWPORT_SETTLE_MS = 400; // нет докой подтверждённого тайминга — щедрый, но ограниченный бюджет
+
+  function isDesktopPlatform() {
+    try {
+      var p = (new URLSearchParams(location.search)).get('vk_platform') || '';
+      return p === 'desktop_web' || p === 'desktop_app';
+    } catch (e) { return false; }
+  }
+
+  // Резервирует контейнеру место под баннер (Шаг B). px=0 — снять резерв
+  // (баннер закрыт/скрыт). Одна CSS-переменная активна за раз: десктоп
+  // резервирует справа, мобайл — снизу (по той же isDesktopPlatform(),
+  // что решает раскладку показа).
+  function applyBannerReserve(px) {
+    var varName = isDesktopPlatform() ? '--vk-banner-reserve-right' : '--vk-banner-reserve-bottom';
+    document.documentElement.style.setProperty(varName, Math.max(0, px | 0) + 'px');
+  }
+
+  // Ждёт, пока окно фактически изменит размер (событие resize) либо истечёт
+  // короткий settle-таймаут, затем один раз сообщает актуальный размер.
+  // Нужно, чтобы дать площадке время реально применить layout_type:'resize',
+  // если она это делает — иначе решение "резервировать самим или нет"
+  // принимается раньше, чем платформа успела ужать окно.
+  function waitForViewportSettle(desktop, cb) {
+    var done = false;
+    function finish() {
+      if (done) return;
+      done = true;
+      window.removeEventListener('resize', onResize);
+      cb(desktop ? window.innerWidth : window.innerHeight);
+    }
+    function onResize() { finish(); }
+    window.addEventListener('resize', onResize);
+    setTimeout(finish, VIEWPORT_SETTLE_MS);
+  }
+
+  // Читает ширину/высоту из ответа VKWebAppCheckBannerAd или данных
+  // события VKWebAppBannerAdUpdated — схема полей не подтверждена докой
+  // (см. заголовок блока), поэтому перебираем правдоподобные варианты
+  // вместо одного жёстко зашитого имени.
+  function extractBannerSize(payload) {
+    if (!payload) return null;
+    var w = payload.width != null ? payload.width
+      : (payload.banner_width != null ? payload.banner_width
+      : (payload.size && payload.size.width != null ? payload.size.width : null));
+    var h = payload.height != null ? payload.height
+      : (payload.banner_height != null ? payload.banner_height
+      : (payload.size && payload.size.height != null ? payload.size.height : null));
+    if (w == null && h == null) return null;
+    return { width: w, height: h };
+  }
+
+  function showBannerAd() {
+    if (!available || _bannerClosedByUser) return;
+    var desktop = isDesktopPlatform();
+    var beforeSize = desktop ? window.innerWidth : window.innerHeight;
+    var params = desktop
+      ? { layout_type: 'resize', banner_align: 'right', orientation: 'vertical' } // Шаг A
+      : { banner_location: 'bottom' };
+    // Показ — тихий: ошибка/недоступность не блокирует и не ломает игру
+    // (вне платформы — no-op через available выше; внутри платформы —
+    // просто нет баннера, что уже фактически "не мешает").
+    vkBridge.send('VKWebAppShowBannerAd', params)
+      .then(function () {
+        // Оптимистично, СРАЗУ по запасному размеру (ТЗ №10, шаг B) — не
+        // ждём подтверждения факта resize, чтобы не было окна, где баннер
+        // уже показан, а карточки ещё не подвинуты (тот самый баг ТЗ №10).
+        // Считаем overlay безопасным дефолтом; если ниже выяснится, что
+        // площадка сама ужала окно, — отступ будет снят (ТЗ №11, Фаза 1).
+        _platformReservesSpace = false;
+        applyBannerReserve(desktop ? BANNER_FALLBACK_WIDTH_PX : BANNER_FALLBACK_HEIGHT_PX);
+        // VKWebAppCheckBannerAd при старте (ТЗ №10, шаг B) — уточняет
+        // резерв реальным размером, если Bridge его отдаёт.
+        vkBridge.send('VKWebAppCheckBannerAd').then(function (res) {
+          if (_platformReservesSpace) return; // площадка уже подтверждена — не перетираем 0
+          var size = extractBannerSize(res);
+          if (size) applyBannerReserve(desktop ? size.width : size.height);
+        }).catch(function () { /* остаёмся на запасном размере */ });
+
+        // Параллельно — ТЗ №11, Фаза 1: проверяем ФАКТ (сравнение размера
+        // окна до/после показа баннера), не ужала ли площадка окно сама.
+        // Если да — наш отступ ОБЯЗАН быть снят, иначе получится двойное
+        // резервирование (диагноз ТЗ №11, п.0). Решение окончательное —
+        // применяется поверх любого значения, выставленного выше.
+        waitForViewportSettle(desktop, function (afterSize) {
+          var shrinkPx = beforeSize - afterSize;
+          _platformReservesSpace = shrinkPx >= PLATFORM_RESIZE_THRESHOLD_PX;
+          if (_platformReservesSpace) {
+            applyBannerReserve(0);
+            console.log('[Platform] баннер: площадка сама ужала окно (' +
+              beforeSize + 'px -> ' + afterSize + 'px), свой отступ выключен.');
+          }
+        });
+      })
+      .catch(function (e) {
+        console.warn('[Platform] баннер недоступен:', e);
+      });
+  }
+
+  if (hasBridge() && vkBridge.subscribe) {
+    vkBridge.subscribe(function (e) {
+      if (!e || !e.detail) return;
+      // VKWebAppBannerAdClosedByUser — игрок сам закрыл баннер крестиком;
+      // больше не переоткрываем эту сессию (уважение + меньше жалоб) и
+      // снимаем резерв — раскладка возвращается (ТЗ №10, шаг B). Если до
+      // этого резервировала площадка сама (Фаза 1 ТЗ №11) — applyBannerReserve(0)
+      // здесь безопасный no-op (мы и так ничего не резервировали).
+      if (e.detail.type === 'VKWebAppBannerAdClosedByUser') {
+        _bannerClosedByUser = true;
+        _platformReservesSpace = false;
+        applyBannerReserve(0);
+      }
+      // VKWebAppBannerAdUpdated — уточняем резерв реальным размером
+      // (ТЗ №10, шаг B). ТЗ №11: если площадка резервирует место сама —
+      // НЕ дублируем её отступ своим, иначе снова двойное резервирование.
+      // Молчим, если размер не распознан — остаёмся на том, что уже
+      // выставлено (запасной или предыдущий реальный).
+      if (e.detail.type === 'VKWebAppBannerAdUpdated') {
+        if (_platformReservesSpace) return;
+        var size = extractBannerSize(e.detail.data);
+        if (size) applyBannerReserve(isDesktopPlatform() ? size.width : size.height);
+      }
+    });
+  }
 
   // Полноэкранная реклама. onDone() зовём в любом исходе.
   function showInterstitial(onDone) {
@@ -255,23 +466,53 @@ window.Platform = (function () {
   // звук/состояние (зовём всегда после закрытия).
   // Фикс 7: если проверка показала, что rewarded недоступен (adblock) —
   // ролик вообще не запускаем, награда выдаётся сразу («бесплатный режим»).
+  // ТЗ №12: «бесплатный режим» — это ЛЮБОЙ случай, когда мы не можем
+  // достоверно показать настоящий ролик, не только adblock. Bridge не
+  // инициализирован (!available) и сбой промиса показа (catch) — тот же
+  // класс: игрок нажал кнопку, обещавшую награду, и не виноват в том, что
+  // площадка не смогла её отработать. Единственная законная причина НЕ
+  // выдать — явный result:false внутри успешно РАЗРЕШИВШЕГОСЯ промиса
+  // (площадка утверждает: ролик показан, но не досмотрен/закрыт игроком).
+  // Гонка настоящего промиса моста против таймера — natural Promise-
+  // семантика settle-once сама даёт идемпотентность (эталон
+  // game3/color_sort/vk_platform.js withTimeout, тот же приём).
+  function withTimeout(promise, ms) {
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () { reject(new Error('timeout')); }, ms);
+      promise.then(
+        function (v) { clearTimeout(timer); resolve(v); },
+        function (e) { clearTimeout(timer); reject(e); }
+      );
+    });
+  }
+
   function showRewarded(onReward, onClose) {
-    if (!available) { if (onClose) onClose(false); return; }
-    if (!rewardedAvailable) {
+    if (!available || !rewardedAvailable) {
       if (onReward) onReward();
       if (onClose) onClose(true);
       return;
     }
     vkFlushNow(); // событие «перед рекламой» — не ждём дебаунса
-    vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'reward' })
+    withTimeout(vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'reward' }), REWARD_AD_TIMEOUT_MS)
       .then(function (res) {
         var rewarded = res.result === true;
         if (rewarded && onReward) onReward();
+        // Выдача обязана пережить немедленное закрытие/перезагрузку сразу
+        // после ролика (ТЗ №12, доклад основателя: «выдача сохранена» была
+        // ложью — saveProgress() внутри onReward() лишь ставит запись в
+        // обычную 10с-очередь дебаунса адаптера; без форс-флаша здесь она
+        // терялась при быстром уходе со страницы).
+        if (rewarded) vkFlushNow();
         if (onClose) onClose(rewarded);
       })
       .catch(function (e) {
-        console.warn('[Platform] rewarded недоступен:', e);
-        if (onClose) onClose(false);
+        // Тот же .catch() ловит и штатный сбой моста, и таймаут-предохранитель
+        // (withTimeout реджектит по истечении REWARD_AD_TIMEOUT_MS) — оба
+        // исхода по студийному стандарту выдают награду бесплатно.
+        console.warn('[Platform] showRewarded (vk): недоступен/таймаут ' + REWARD_AD_TIMEOUT_MS + 'мс, выдаём бесплатно:', e);
+        if (onReward) onReward();
+        vkFlushNow();
+        if (onClose) onClose(true);
       });
   }
 
@@ -279,15 +520,25 @@ window.Platform = (function () {
   // VKWebAppShowOrderBox по официальной механике требует серверный
   // колбэк-скрипт («Адрес обратного вызова» в настройках приложения VK),
   // которого у студии нет. Реализовывать самодельный обход — запрещено
-  // постановкой. Вместо этого — контракт остаётся полным (main.js
-  // одинаков для обеих сборок и вызывает эти методы безусловно), но
-  // всегда отвечает «ничего нет»/«отменено»: getCatalog() возвращает
-  // пустой каталог, поэтому main.js сам показывает каждый платный товар
-  // как shopUnavailable («скоро»), кнопка покупки остаётся задизейблена —
-  // это уже существующее поведение main.js, здесь ничего допиливать не
-  // пришлось.
+  // постановкой. Контракт остаётся полным (main.js одинаков для обеих
+  // сборок и вызывает эти методы безусловно), но всегда отвечает «ничего
+  // нет»/«отменено»: getCatalog() возвращает пустой каталог.
+  //
+  // ТЗ №07, фаза 3.3: раньше это приводило к тому, что main.js показывал
+  // каждый платный товар как shopUnavailable с задизейбленной кнопкой
+  // «Купить» — витрина видна, купить нельзя. По стандарту студии (18.08,
+  // второй отказ Color Sort ВК за такую же витрину) это состояние обязано
+  // быть НЕВЫРАЗИМЫМ. paymentsAvailable:false — флаг, по которому main.js
+  // (showShop) целиком скрывает платные ряды в ВК-сборке, а не просто
+  // дизейблит кнопку. Код покупок не удалён — если ВК-платежи когда-нибудь
+  // подключат, здесь меняется одно значение.
+  // getPurchases() — контракт {ok, purchases, error} общий с platform.js
+  // (ТЗ №18, refreshCosmeticOwnership вызывается безусловно на каждом
+  // старте для обеих сборок). ok:true/purchases:[] здесь — не сбой, а то
+  // же «покупок нет», что и в dev-режиме Яндекса: платежи на ВК выключены
+  // флагом (paymentsAvailable:false), а не упавшим вызовом.
   function getCatalog()                { return Promise.resolve([]); }
-  function getPurchases()               { return Promise.resolve([]); }
+  function getPurchases()               { return Promise.resolve({ ok: true, purchases: [] }); }
   function purchase(productId)          { return Promise.resolve(null); }
   function consumePurchase(purchaseToken) { return Promise.resolve(); }
 
@@ -299,12 +550,15 @@ window.Platform = (function () {
     save: save,
     load: load,
     now: now,
+    showBannerAd: showBannerAd,
     showInterstitial: showInterstitial,
     showRewarded: showRewarded,
     getCatalog: getCatalog,
     getPurchases: getPurchases,
     purchase: purchase,
     consumePurchase: consumePurchase,
+    paymentsAvailable: false,
+    SAVE_SIZE_GUARD_BYTES: VK_SAVE_SIZE_GUARD_BYTES,
   };
 })();
 }
@@ -319,5 +573,6 @@ if (typeof module === 'object' && module.exports) {
     WRITE_LIMIT_PER_HOUR: VK_WRITE_LIMIT_PER_HOUR,
     SOFT_BRAKE_THRESHOLD: VK_SOFT_BRAKE_THRESHOLD,
     MAX_DEBOUNCE_MS:      VK_MAX_DEBOUNCE_MS,
+    SAVE_SIZE_GUARD_BYTES: VK_SAVE_SIZE_GUARD_BYTES,
   };
 }
