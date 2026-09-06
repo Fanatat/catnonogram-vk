@@ -68,9 +68,11 @@ document.addEventListener('DOMContentLoaded', function () {
   var _retentionState  = null;
 
   // Конфиг модуля (ТЗ №01, п.2.6) — колбэки замыкают состояние ИГРЫ,
-  // сам retention.js про LEVELS/COSMETICS ничего не знает. typeof-проверка:
-  // в яндекс-сборке retention.js не подключён (build.py, только VK) —
-  // весь блок ниже должен молча не выполняться, а не падать.
+  // сам retention.js про LEVELS/COSMETICS ничего не знает. typeof-проверка
+  // (историческая, до ТЗ №26 отличала площадки — теперь Retention
+  // подключён в обеих сборках, блок ниже выполняется на обеих) молча не
+  // падает, если retention.js всё же не подключён (dev-запуск исходника
+  // напрямую, без build.py).
   var RETENTION_TICK_MS = 6 * 60 * 60 * 1000; // такт раздатчика (боевой, 6ч)
 
   var RETENTION_CONFIG = (typeof Retention !== 'undefined') ? Retention.mergeConfig({
@@ -381,6 +383,21 @@ document.addEventListener('DOMContentLoaded', function () {
     el.textContent = text;
   }
 
+  // Яндекс 4.5.1 (усиление 2026-09-06, прямая просьба основателя после
+  // первого текстового фикса маркера): текста «Смотреть рекламу» мало —
+  // нужен ещё и значок, читаемый как «реклама» с первого взгляда, отдельно
+  // от текста. Один SVG на обе RV-точки (кружок + плашка-«экран» с
+  // треугольником — узнаваемый паттерн «видео», не спутать с ▶ обычного
+  // hint). currentColor не берём — заливка фиксирована через var(--accent),
+  // чтобы значок не терялся на любой из 4 цветовых тем магазина (Задача I).
+  function adIconHtml() {
+    return '<svg class="ad-icon" viewBox="0 0 16 16" width="15" height="15" ' +
+      'aria-hidden="true" focusable="false">' +
+      '<rect x="0.5" y="2.5" width="15" height="11" rx="2.5"/>' +
+      '<path d="M6.4 5.6v4.8l4.6-2.4z"/>' +
+      '</svg>';
+  }
+
   // Кнопка «Открыть ещё +N» (экран категорий) — ТЗ №09, фаза 3. Отдельный
   // кран от такта раздатчика (см. Retention.grantDrip — не ограничен
   // потолком накопителя, только концом кампании). Без кулдауна и гейтов
@@ -396,7 +413,11 @@ document.addEventListener('DOMContentLoaded', function () {
     // открывать — не завязана на то, доигран ли стартовый запас.
     btn.hidden = fullyOpen;
     if (fullyOpen) return;
-    btn.textContent = I18N.t('retentionRewardedBtn').replace('{n}', RETENTION_CONFIG.dripPerTick);
+    // innerHTML вместо textContent (только здесь) — значок из adIconHtml() +
+    // локализованная строка I18N.t(), обе части фиксированы разработчиком,
+    // не вводом игрока, инъекции неоткуда взяться.
+    var label = I18N.t('retentionRewardedBtn').replace('{n}', RETENTION_CONFIG.dripPerTick);
+    btn.innerHTML = '<span class="rv-btn-inner">' + adIconHtml() + '<span>' + label + '</span></span>';
   }
 
   function onRewardedButtonClick() {
@@ -426,26 +447,45 @@ document.addEventListener('DOMContentLoaded', function () {
     var el = document.getElementById(RETENTION_CONFIG.domSlots.streakLine);
     if (!el) return;
     var shown = Math.min(_retentionState.streakLen, RETENTION_CONFIG.streakThreshold);
-    el.textContent = I18N.t('retentionStreakLine')
-      .replace('{n}', shown).replace('{m}', RETENTION_CONFIG.streakThreshold);
+    el.textContent = I18N.t('retentionStreakLine').replace('{n}', shown);
   }
 
   // ТЗ №03, Фаза 1: видимый баланс бонусных подсказок (находка ТЗ №02 —
   // награда 2-го дня жила только 3с тоста и пропадала бесследно). Общий
-  // код (main.js — файл общий для Яндекса и ВК), но функционально в
-  // Яндекс-сборке инертна: _bonusHints там всегда 0, потому что retention.js
-  // (единственный, кто зовёт grantHints) в яндекс-билд не входит — badge
-  // остаётся hidden с самой разметки и никогда не отображается. Без
-  // знаменателя (только число, без «из N») — п.2.4/«ЧЕГО НЕ ДЕЛАТЬ» ТЗ №01.
+  // код (main.js — файл общий для Яндекса и ВК). До ТЗ №26 на Яндексе была
+  // функционально инертна (_bonusHints всегда 0, retention.js не подключён)
+  // — с Этапа 3 отображается на обеих площадках одинаково. Без знаменателя
+  // (только число, без «из N») — п.2.4/«ЧЕГО НЕ ДЕЛАТЬ» ТЗ №01.
+  //
+  // Яндекс 4.5.1 (замечание модерации 2026-09-06, три захода — основатель
+  // явно отверг первые два как "переделать"). Заход №1: значок «экран+play»
+  // появлялся только ПОСЛЕ исчерпания баланса — сам переход ощущался как
+  // неожиданность. Заход №2: значок стал постоянным + бейдж-счётчик на его
+  // углу — но подпись при исчерпании ПОЛНОСТЬЮ заменялась на «Смотреть
+  // рекламу», из-за чего кнопка среди «Закрасить»/«Крестик» переставала
+  // читаться как подсказка вообще (игрок видел ряд из трёх инструментов, и
+  // третий внезапно писал про рекламу — ни слова «подсказка»). Заход №3
+  // (текущий): подпись `[data-i18n="hint"]` ПОСТОЯННАЯ — «Подсказка», не
+  // переключается никогда, это и есть главный посыл кнопки. Факт рекламы —
+  // вторичная, более мелкая подпись `#hint-ad-caption` («за рекламу»),
+  // видимая (visibility, не hidden — резервирует высоту, чтобы кнопка не
+  // прыгала в размере между состояниями и не тянула за собой .mode-bar,
+  // см. style.css) ТОЛЬКО когда клик реально уйдёт в Platform.showRewarded
+  // (см. onHintClick, ветка else). Бейдж-счётчик (#hint-badge, на углу
+  // постоянного значка) — не изменился: N бесплатных попыток, живо считает
+  // вниз, ноль сознательно не показывается (решение ТЗ №03/№12).
   function updateHintBadge() {
     var badge = document.getElementById('hint-badge');
-    if (!badge) return;
-    if (_bonusHints > 0) {
-      badge.textContent = String(_bonusHints);
-      badge.hidden = false;
-    } else {
-      badge.hidden = true;
+    if (badge) {
+      if (_bonusHints > 0) {
+        badge.textContent = String(_bonusHints);
+        badge.hidden = false;
+      } else {
+        badge.hidden = true;
+      }
     }
+    var caption = document.getElementById('hint-ad-caption');
+    if (caption) caption.classList.toggle('is-visible', _bonusHints <= 0);
   }
 
   function _formatClock(d) {
