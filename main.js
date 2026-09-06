@@ -383,6 +383,21 @@ document.addEventListener('DOMContentLoaded', function () {
     el.textContent = text;
   }
 
+  // Яндекс 4.5.1 (усиление 2026-09-06, прямая просьба основателя после
+  // первого текстового фикса маркера): текста «Смотреть рекламу» мало —
+  // нужен ещё и значок, читаемый как «реклама» с первого взгляда, отдельно
+  // от текста. Один SVG на обе RV-точки (кружок + плашка-«экран» с
+  // треугольником — узнаваемый паттерн «видео», не спутать с ▶ обычного
+  // hint). currentColor не берём — заливка фиксирована через var(--accent),
+  // чтобы значок не терялся на любой из 4 цветовых тем магазина (Задача I).
+  function adIconHtml() {
+    return '<svg class="ad-icon" viewBox="0 0 16 16" width="15" height="15" ' +
+      'aria-hidden="true" focusable="false">' +
+      '<rect x="0.5" y="2.5" width="15" height="11" rx="2.5"/>' +
+      '<path d="M6.4 5.6v4.8l4.6-2.4z"/>' +
+      '</svg>';
+  }
+
   // Кнопка «Открыть ещё +N» (экран категорий) — ТЗ №09, фаза 3. Отдельный
   // кран от такта раздатчика (см. Retention.grantDrip — не ограничен
   // потолком накопителя, только концом кампании). Без кулдауна и гейтов
@@ -398,7 +413,11 @@ document.addEventListener('DOMContentLoaded', function () {
     // открывать — не завязана на то, доигран ли стартовый запас.
     btn.hidden = fullyOpen;
     if (fullyOpen) return;
-    btn.textContent = I18N.t('retentionRewardedBtn').replace('{n}', RETENTION_CONFIG.dripPerTick);
+    // innerHTML вместо textContent (только здесь) — значок из adIconHtml() +
+    // локализованная строка I18N.t(), обе части фиксированы разработчиком,
+    // не вводом игрока, инъекции неоткуда взяться.
+    var label = I18N.t('retentionRewardedBtn').replace('{n}', RETENTION_CONFIG.dripPerTick);
+    btn.innerHTML = '<span class="rv-btn-inner">' + adIconHtml() + '<span>' + label + '</span></span>';
   }
 
   function onRewardedButtonClick() {
@@ -447,13 +466,19 @@ document.addEventListener('DOMContentLoaded', function () {
         badge.hidden = true;
       }
     }
-    // Яндекс 4.5.1 (замечание модерации, 2026-09-06): бонусный баланс исчерпан
-    // -> клик по ЭТОЙ ЖЕ кнопке уходит в Platform.showRewarded (см. onHintClick,
-    // ветка else) — подпись обязана прямо сказать «реклама», иначе кнопка
-    // неотличима от бесплатной подсказки. Пока баланс есть — обычная подпись,
-    // клика в rewarded не будет.
+    // Яндекс 4.5.1 (замечание модерации, 2026-09-06, усилено 06.09 значком
+    // по просьбе основателя): бонусный баланс исчерпан -> клик по ЭТОЙ ЖЕ
+    // кнопке уходит в Platform.showRewarded (см. onHintClick, ветка else) —
+    // подпись и значок обязаны прямо сказать «реклама», иначе кнопка
+    // неотличима от бесплатной подсказки. Пока баланс есть — обычная
+    // подпись без значка, клика в rewarded не будет (innerHTML на baseline —
+    // значок пропадает вместе с ним).
     var label = document.querySelector('#btn-hint [data-i18n="hint"]');
-    if (label) label.textContent = I18N.t(_bonusHints > 0 ? 'hint' : 'hintAd');
+    if (label) {
+      label.innerHTML = _bonusHints > 0
+        ? I18N.t('hint')
+        : adIconHtml() + I18N.t('hintAd');
+    }
   }
 
   function _formatClock(d) {

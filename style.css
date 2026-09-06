@@ -208,6 +208,25 @@ html, body {
    что у .daily-meta, см. build.py transform_index_html_vk). */
 .retention-rewarded-btn[hidden] { display: none; }
 
+/* ТЗ (RV-значок, Яндекс 4.5.1, усиление 2026-09-06): значок «экран +
+   треугольник» на обеих RV-точках (эта кнопка + #btn-hint в состоянии
+   рекламы, см. .hint-btn ниже) — рядом с текстом, тем же var(--accent),
+   что и остальной акцент студии, чтобы не потеряться ни в одной из 4
+   косметических тем магазина (Задача I). Инлайн-flex обёртка вместо flex
+   на самой кнопке — сохраняет её auto-ширину/центрирование (margin:0 auto
+   выше рассчитан на shrink-to-fit кнопки, не на flex-контейнер). */
+.rv-btn-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ad-icon {
+  flex: none;
+  color: var(--accent);
+}
+.ad-icon rect { fill: none; stroke: currentColor; stroke-width: 1.3; }
+.ad-icon path { fill: currentColor; }
+
 /* ТЗ №26, Р7 (26.08): на 568×320 (самая низкая рабочая ширина студии)
    строка раздатчика, строка пазла дня и кнопка «Магазин» уходили за
    нижний край — html/body не скроллятся (overflow:hidden выше), то есть
@@ -778,6 +797,16 @@ html, body {
 .hint-btn:disabled {
   opacity: 0.35;
   cursor: default;
+}
+/* ТЗ (RV-значок, Яндекс 4.5.1, 2026-09-06): подпись #btn-hint переключается
+   в updateHintBadge() между обычным текстом и «значок + Смотреть рекламу»
+   (innerHTML) — inline-flex держит значок и текст на одной строке без
+   переноса внутри .hint-btn (white-space:nowrap на самой кнопке). */
+#btn-hint [data-i18n="hint"] {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: middle;
 }
 /* ТЗ №03, Фаза 1: видимый баланс бонусных подсказок (награда 2-го дня
    серии входов, ТЗ №01 — до этого жила только 3с тоста и пропадала).

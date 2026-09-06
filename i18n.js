@@ -15,7 +15,7 @@ window.I18N = (function () {
       next:      'Дальше',
       continue:  'Продолжить',
       hint:      '▶ Открыть клетку',
-      hintAd:    '▶ Смотреть рекламу',
+      hintAd:    'Смотреть рекламу',
       clearBoard:      'Очистить',
       clearConfirmText:'Очистить поле? Прогресс на этом уровне будет потерян',
       clearYes:        'Да',
@@ -89,7 +89,7 @@ window.I18N = (function () {
       // ТЗ (RV-маркер, Яндекс 4.5.1, замечание модерации 2026-09-06): подпись
       // должна прямо сказать «реклама», иначе кнопка не проходит п.4.5.1 —
       // на неё нет замены смыслом «плати временем/действием», только рекламой.
-      retentionRewardedBtn: '▶ Смотреть рекламу: +{n} пазлов',
+      retentionRewardedBtn: 'Смотреть рекламу: +{n} пазлов',
       puzzleWordOne:      'пазл',
       puzzleWordFew:      'пазла',
       puzzleWordMany:     'пазлов',
@@ -190,7 +190,7 @@ window.I18N = (function () {
       next:      'Next',
       continue:  'Continue',
       hint:      '▶ Open a cell',
-      hintAd:    '▶ Watch ad',
+      hintAd:    'Watch ad',
       clearBoard:      'Clear',
       clearConfirmText:'Clear the board? Your progress on this level will be lost',
       clearYes:        'Yes',
@@ -246,7 +246,7 @@ window.I18N = (function () {
       retentionAtCapSuffix: ' · accumulation paused',
       retentionEmptyLine: '+{n} {word} {verb} at {time}',
       retentionFull:      'Puzzles are waiting — go play!',
-      retentionRewardedBtn: '▶ Watch ad: +{n} puzzles',
+      retentionRewardedBtn: 'Watch ad: +{n} puzzles',
       puzzleWordOne:      'puzzle',
       puzzleWordFew:      'puzzles',
       puzzleWordMany:     'puzzles',
