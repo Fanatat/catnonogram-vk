@@ -135,6 +135,32 @@ html, body {
 @keyframes spin { to { transform: rotate(360deg); } }
 .loading-text { margin-top: 16px; color: var(--ink-light); font-size: 0.9rem; }
 
+/* RV-загрузка (2026-09-06, баг-репорт основателя): пока идёт реальный
+   показ Platform.showRewarded (до 40с, REWARD_AD_TIMEOUT_MS/
+   AD_HANG_TIMEOUT_MS — оба адаптера), экран раньше молча "замирал" без
+   единого признака жизни — неотличимо от зависшей игры. Явный оверлей
+   поверх ВСЕГО (z-index выше .retention-toast, единственного, что уже
+   использовало 50) — видимая причина паузы, не имитация поломки. .loader/
+   .loading-text переиспользованы как есть (экран загрузки выше) — не
+   плодим второй спиннер под другим именем. Кнопку/экран под оверлеем НЕ
+   прячем и НЕ дизейблим (п.190/шрам Color Sort про #retention-rewarded-btn
+   остаётся в силе) — просто временно перекрываем явным, понятным слоем;
+   main.js: showAdLoadingOverlay()/hideAdLoadingOverlay(), парой вокруг
+   каждого вызова Platform.showRewarded (onHintClick, onRewardedButtonClick). */
+.ad-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+.ad-loading-overlay[hidden] { display: none; }
+.ad-loading-overlay .loader { border-color: var(--bg); border-top-color: transparent; }
+.ad-loading-text { margin-top: 16px; color: var(--bg); font-size: 0.9rem; text-align: center; padding: 0 24px; }
+
 /* Меню */
 .menu-head { text-align: center; margin-bottom: 48px; }
 .game-title { font-size: 2.6rem; font-weight: normal; margin: 8px 0 6px; }

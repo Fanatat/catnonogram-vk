@@ -495,7 +495,20 @@ window.Platform = (function () {
       return;
     }
     vkFlushNow(); // событие «перед рекламой» — не ждём дебаунса
-    withTimeout(vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'reward' }), REWARD_AD_TIMEOUT_MS)
+    // 2026-09-06: баг-репорт основателя — на мобильном ВК-клиенте
+    // VKWebAppShowNativeAds(reward) реально не показывает ролик (баннер
+    // при этом работает нормально — площадка в целом рекламу отдаёт,
+    // проблема именно с наполнением rewarded-формата). Известная слабость
+    // ВК-платформы: инвентарь rewarded-видео исторически заметно ýже
+    // баннерного/интерстишл (см. VKCOM/vk-bridge#243 — тот же класс
+    // проблемы у CheckNativeAds, который уже привёл к прошлому фиксу этой
+    // сессии). useWaterfall:true — задокументированный официальный
+    // параметр ИМЕННО для ad_format:'reward': разрешает площадке
+    // подставить interstitial, если настоящего rewarded-ролика нет в
+    // наличии, вместо немедленного отказа — увеличивает реальную долю
+    // показов, не отменяет и не заменяет предохранитель ниже (он остаётся
+    // на случай, если и подставить нечего).
+    withTimeout(vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'reward', useWaterfall: true }), REWARD_AD_TIMEOUT_MS)
       .then(function (res) {
         var rewarded = res.result === true;
         if (rewarded && onReward) onReward();

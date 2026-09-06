@@ -310,6 +310,23 @@ document.addEventListener('DOMContentLoaded', function () {
     }, 3200);
   }
 
+  // RV-загрузка (2026-09-06, баг-репорт основателя): Platform.showRewarded
+  // может занять до 40с (REWARD_AD_TIMEOUT_MS/AD_HANG_TIMEOUT_MS, оба
+  // адаптера) — без явного индикатора это неотличимо от зависшей игры.
+  // Пара функций оборачивает КАЖДЫЙ вызов showRewarded (onHintClick,
+  // onRewardedButtonClick) — единая точка, а не дублированная логика на
+  // каждом сайте вызова. #ad-loading-overlay НЕ прячет и не дизейблит
+  // саму кнопку/экран под собой (п.190/шрам Color Sort остаётся в силе) —
+  // это отдельный, временный, явный слой поверх.
+  function showAdLoadingOverlay() {
+    var el = document.getElementById('ad-loading-overlay');
+    if (el) el.hidden = false;
+  }
+  function hideAdLoadingOverlay() {
+    var el = document.getElementById('ad-loading-overlay');
+    if (el) el.hidden = true;
+  }
+
   // Продвигает раздатчик на текущий момент; при реальной выдаче — сохраняет
   // и показывает отклик (п.2.4: тихих улучшений не бывает). Дёшево вызывать
   // часто (showMenu/showCategory) — если тактов не набежало, no-op.
@@ -425,6 +442,9 @@ document.addEventListener('DOMContentLoaded', function () {
     // Реклама недоступна (adblock/нет филла) -> Platform.showRewarded зовёт
     // onReward сразу же, бесплатно (см. adapters/vk_bridge.js) — кнопка не
     // прячется и не блокируется на время показа (п.190, шрам Color Sort).
+    // showAdLoadingOverlay/hide — отдельный явный слой поверх, не трогает
+    // саму кнопку (см. комментарий у showAdLoadingOverlay()).
+    showAdLoadingOverlay();
     Platform.showRewarded(function onReward() {
       var before = _retentionState.dripOpened;
       _retentionState = Retention.grantDrip(_retentionState, RETENTION_CONFIG, RETENTION_CONFIG.dripPerTick);
@@ -436,6 +456,7 @@ document.addEventListener('DOMContentLoaded', function () {
           : I18N.t('retentionRewardDrip') + ' (' + granted + ')');
       }
     }, function onClose() {
+      hideAdLoadingOverlay();
       renderRetentionDripLine();
       renderRewardedButton();
     });
@@ -1420,9 +1441,15 @@ document.addEventListener('DOMContentLoaded', function () {
     if (_currentLevel >= 0) flushBoardSave(_currentLevel);
     Sound.suspend();
     Nonogram.setPaused(true);
+    // Nonogram.setPaused(true) уже блокирует поле — showAdLoadingOverlay()
+    // объясняет ПОЧЕМУ (до 40с ожидания, REWARD_AD_TIMEOUT_MS), а не
+    // оставляет игрока смотреть на молча замершую доску (баг-репорт
+    // основателя 2026-09-06).
+    showAdLoadingOverlay();
     Platform.showRewarded(
       function () { pendingHint = hint; },
       function () {
+        hideAdLoadingOverlay();
         Nonogram.setPaused(false);
         Sound.resume();
         if (pendingHint) {
