@@ -202,6 +202,20 @@ window.Platform = (function () {
     return Promise.resolve();
   }
 
+  // 2026-09-06: баг-репорт основателя, Android — «долго грузится и в итоге
+  // падает с ошибкой загрузки». init() (VKWebAppInit) уже был защищён
+  // таймаутом (2500мс выше), но load() ниже НЕ БЫЛ — а он стоит прямо в
+  // критическом пути загрузки (main.js: Platform.init().then(...
+  // Platform.load().then(... showMenu(); Platform.ready() ...))). Если
+  // init() успевает за 2.5с (доступность моста подтверждена), а
+  // ПОСЛЕДУЮЩИЙ VKWebAppStorageGet виснет молча (не реджектится, просто не
+  // резолвится — на Android воспроизводимо чаще, чем на десктопе, судя по
+  // докладу), showMenu()/Platform.ready() НИКОГДА не вызываются — игрок
+  // навсегда на #loading, а сама площадка ВК в итоге показывает свою
+  // ошибку загрузки, не дождавшись готовности. Тот же withTimeout(), что
+  // уже используется ниже в showRewarded() этого же файла.
+  var STORAGE_TIMEOUT_MS = 5000;
+
   function load() {
     if (!available) {
       try {
@@ -209,13 +223,13 @@ window.Platform = (function () {
         return Promise.resolve(raw ? JSON.parse(raw) : null);
       } catch (e) { return Promise.resolve(null); }
     }
-    return vkBridge.send('VKWebAppStorageGet', { keys: [STORAGE_KEY] })
+    return withTimeout(vkBridge.send('VKWebAppStorageGet', { keys: [STORAGE_KEY] }), STORAGE_TIMEOUT_MS)
       .then(function (res) {
         var raw = res.keys && res.keys[0] && res.keys[0].value;
         return raw ? JSON.parse(raw) : null;
       })
       .catch(function (e) {
-        console.error('[Platform] StorageGet ошибка:', e);
+        console.error('[Platform] StorageGet ошибка/таймаут (' + STORAGE_TIMEOUT_MS + 'мс):', e);
         return null;
       });
   }
