@@ -68,9 +68,11 @@ document.addEventListener('DOMContentLoaded', function () {
   var _retentionState  = null;
 
   // Конфиг модуля (ТЗ №01, п.2.6) — колбэки замыкают состояние ИГРЫ,
-  // сам retention.js про LEVELS/COSMETICS ничего не знает. typeof-проверка:
-  // в яндекс-сборке retention.js не подключён (build.py, только VK) —
-  // весь блок ниже должен молча не выполняться, а не падать.
+  // сам retention.js про LEVELS/COSMETICS ничего не знает. typeof-проверка
+  // (историческая, до ТЗ №26 отличала площадки — теперь Retention
+  // подключён в обеих сборках, блок ниже выполняется на обеих) молча не
+  // падает, если retention.js всё же не подключён (dev-запуск исходника
+  // напрямую, без build.py).
   var RETENTION_TICK_MS = 6 * 60 * 60 * 1000; // такт раздатчика (боевой, 6ч)
 
   var RETENTION_CONFIG = (typeof Retention !== 'undefined') ? Retention.mergeConfig({
@@ -426,26 +428,32 @@ document.addEventListener('DOMContentLoaded', function () {
     var el = document.getElementById(RETENTION_CONFIG.domSlots.streakLine);
     if (!el) return;
     var shown = Math.min(_retentionState.streakLen, RETENTION_CONFIG.streakThreshold);
-    el.textContent = I18N.t('retentionStreakLine')
-      .replace('{n}', shown).replace('{m}', RETENTION_CONFIG.streakThreshold);
+    el.textContent = I18N.t('retentionStreakLine').replace('{n}', shown);
   }
 
   // ТЗ №03, Фаза 1: видимый баланс бонусных подсказок (находка ТЗ №02 —
   // награда 2-го дня жила только 3с тоста и пропадала бесследно). Общий
-  // код (main.js — файл общий для Яндекса и ВК), но функционально в
-  // Яндекс-сборке инертна: _bonusHints там всегда 0, потому что retention.js
-  // (единственный, кто зовёт grantHints) в яндекс-билд не входит — badge
-  // остаётся hidden с самой разметки и никогда не отображается. Без
-  // знаменателя (только число, без «из N») — п.2.4/«ЧЕГО НЕ ДЕЛАТЬ» ТЗ №01.
+  // код (main.js — файл общий для Яндекса и ВК). До ТЗ №26 на Яндексе была
+  // функционально инертна (_bonusHints всегда 0, retention.js не подключён)
+  // — с Этапа 3 отображается на обеих площадках одинаково. Без знаменателя
+  // (только число, без «из N») — п.2.4/«ЧЕГО НЕ ДЕЛАТЬ» ТЗ №01.
   function updateHintBadge() {
     var badge = document.getElementById('hint-badge');
-    if (!badge) return;
-    if (_bonusHints > 0) {
-      badge.textContent = String(_bonusHints);
-      badge.hidden = false;
-    } else {
-      badge.hidden = true;
+    if (badge) {
+      if (_bonusHints > 0) {
+        badge.textContent = String(_bonusHints);
+        badge.hidden = false;
+      } else {
+        badge.hidden = true;
+      }
     }
+    // Яндекс 4.5.1 (замечание модерации, 2026-09-06): бонусный баланс исчерпан
+    // -> клик по ЭТОЙ ЖЕ кнопке уходит в Platform.showRewarded (см. onHintClick,
+    // ветка else) — подпись обязана прямо сказать «реклама», иначе кнопка
+    // неотличима от бесплатной подсказки. Пока баланс есть — обычная подпись,
+    // клика в rewarded не будет.
+    var label = document.querySelector('#btn-hint [data-i18n="hint"]');
+    if (label) label.textContent = I18N.t(_bonusHints > 0 ? 'hint' : 'hintAd');
   }
 
   function _formatClock(d) {

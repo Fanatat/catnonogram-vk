@@ -131,7 +131,29 @@
   // продвигается вообще, поэтому простой не теряется — как только у
   // игрока появится место в накопителе (сыграет дальше), заслуженные
   // такты применятся сразу.
+  //
+  // Часы устройства ушли НАЗАД (ТЗ №26, Этап 5 — долг, перенесён из
+  // Color Sort, ТЗ №18 §B): nowMs МЕНЬШЕ сохранённого lastTickAt.
+  // Начисление не производится (нечего множить на отрицательный elapsed),
+  // штамп подтягивается к «сейчас». Альтернатива — оставить штамп из
+  // «будущего» — заперла бы игрока на весь сдвиг часов (порт часов на год
+  // назад запер бы раздатчик на год); эта дешевле и безопаснее. Порт
+  // буквальный — Nonogram не знает gateMode:'energy' (Color Sort), здесь
+  // только один режим («раздатчик очереди уровней», ТЗ №08), для которого
+  // Color Sort сам оставляет поведение «накопитель полон — время стоит»
+  // нетронутым — вторая часть починки ТЗ №18 (штамп у потолка в режиме
+  // energy) сюда не переносится, она про другой режим.
   function applyDripTick(moduleState, nowMs, config) {
+    if (nowMs < moduleState.lastTickAt) {
+      return {
+        dripOpened: moduleState.dripOpened,
+        lastTickAt: nowMs,
+        lastEntryDay: moduleState.lastEntryDay,
+        streakLen: moduleState.streakLen,
+        streakRewards: moduleState.streakRewards,
+      };
+    }
+
     var backlog = dripBacklogCount(moduleState, config);
     var room = config.accumulatorCap - backlog;
     if (room <= 0) return moduleState;
