@@ -2,7 +2,48 @@
    main.js — точка входа.
    ============================================================ */
 
+// Debug-оверлей (2026-09-06, живой Android-баг с rewarded-рекламой):
+// у основателя нет под рукой ПК+кабеля для chrome://inspect (remote
+// debugging Android WebView) — печатаем те же строки, что шли бы в
+// консоль, прямо на экране, чтобы можно было сфотографировать телефон.
+// Активируется ?debug=1 — invisible по умолчанию, нулевой риск для
+// обычных игроков. ГЛОБАЛЬНАЯ функция (не заперта в замыкании ниже) —
+// adapters/vk_bridge.js и platform.js грузятся РАНЬШЕ этого файла, но
+// зовут window.debugLog только по клику, т.е. уже после того, как этот
+// скрипт целиком выполнился и window.debugLog определён; определяем ВНЕ
+// DOMContentLoaded — элементы #debug-overlay/#debug-log физически уже в
+// DOM к моменту выполнения этого файла (script лежит в конце body).
+var DEBUG_MODE = /(^|[?&])debug=1(&|$)/.test(location.search);
+window.debugLog = function (line) {
+  if (!DEBUG_MODE) return;
+  var overlay = document.getElementById('debug-overlay');
+  var log = document.getElementById('debug-log');
+  if (!overlay || !log) return;
+  overlay.hidden = false;
+  var now = new Date();
+  var ts = ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2) + ':' +
+    ('0' + now.getSeconds()).slice(-2) + '.' + ('00' + now.getMilliseconds()).slice(-3);
+  var row = document.createElement('div');
+  row.textContent = '[' + ts + '] ' + line;
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+  // Дублируем в консоль — на десктопе/эмуляторе удобнее читать оттуда,
+  // дублирование ничему не мешает.
+  console.log('[debug] ' + line);
+};
+if (DEBUG_MODE) {
+  window.debugLog('env: AndroidBridge=' + !!window.AndroidBridge + ' UA=' + navigator.userAgent.slice(0, 70));
+}
+
 document.addEventListener('DOMContentLoaded', function () {
+
+  var debugClearBtn = document.getElementById('debug-clear');
+  if (debugClearBtn) {
+    debugClearBtn.addEventListener('click', function () {
+      var log = document.getElementById('debug-log');
+      if (log) log.innerHTML = '';
+    });
+  }
 
   // ПК-модерация (п.1.6.2.7): модератор кликал ПКМ по игровому полю —
   // каждый клик открывал системное контекстное меню браузера. Гасим
@@ -438,6 +479,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   function onRewardedButtonClick() {
+    window.debugLog('click: #retention-rewarded-btn');
     Sound.resumeContext();
     // Реклама недоступна (adblock/нет филла) -> Platform.showRewarded зовёт
     // onReward сразу же, бесплатно (см. adapters/vk_bridge.js) — кнопка не
@@ -1416,6 +1458,7 @@ document.addEventListener('DOMContentLoaded', function () {
   /* ---- Подсказка за рекламу ---- */
 
   function onHintClick() {
+    window.debugLog('click: #btn-hint (bonusHints=' + _bonusHints + ')');
     var hint = Nonogram.findHint();
     if (!hint) {
       document.getElementById('btn-hint').disabled = true;

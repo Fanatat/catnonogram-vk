@@ -370,8 +370,10 @@ window.Platform = (function () {
     // Показ — тихий: ошибка/недоступность не блокирует и не ломает игру
     // (вне платформы — no-op через available выше; внутри платформы —
     // просто нет баннера, что уже фактически "не мешает").
+    if (window.debugLog) window.debugLog('showBannerAd: -> AndroidBridge/мост VKWebAppShowBannerAd (для сравнения с rewarded — этот путь обычно отвечает)');
     vkBridge.send('VKWebAppShowBannerAd', params)
       .then(function () {
+        if (window.debugLog) window.debugLog('showBannerAd: мост ОТВЕТИЛ (успех)');
         // Оптимистично, СРАЗУ по запасному размеру (ТЗ №10, шаг B) — не
         // ждём подтверждения факта resize, чтобы не было окна, где баннер
         // уже показан, а карточки ещё не подвинуты (тот самый баг ТЗ №10).
@@ -404,6 +406,7 @@ window.Platform = (function () {
       })
       .catch(function (e) {
         console.warn('[Platform] баннер недоступен:', e);
+        if (window.debugLog) window.debugLog('showBannerAd: мост ОТВЕТИЛ ошибкой/недоступен: ' + (function () { try { return JSON.stringify(e); } catch (je) { return String(e); } })());
       });
   }
 
@@ -490,6 +493,7 @@ window.Platform = (function () {
     // залипания на «бесплатно навсегда» из-за одного неудачного рывка при
     // загрузке страницы.
     if (!available) {
+      if (window.debugLog) window.debugLog('showRewarded: Platform недоступен (dev-режим) -> бесплатно сразу');
       if (onReward) onReward();
       if (onClose) onClose(true);
       return;
@@ -508,9 +512,11 @@ window.Platform = (function () {
     // наличии, вместо немедленного отказа — увеличивает реальную долю
     // показов, не отменяет и не заменяет предохранитель ниже (он остаётся
     // на случай, если и подставить нечего).
+    if (window.debugLog) window.debugLog('showRewarded: -> AndroidBridge/мост VKWebAppShowNativeAds(reward, useWaterfall=true), жду до ' + REWARD_AD_TIMEOUT_MS + 'мс');
     withTimeout(vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'reward', useWaterfall: true }), REWARD_AD_TIMEOUT_MS)
       .then(function (res) {
         var rewarded = res.result === true;
+        if (window.debugLog) window.debugLog('showRewarded: мост ОТВЕТИЛ, result=' + res.result);
         if (rewarded && onReward) onReward();
         // Выдача обязана пережить немедленное закрытие/перезагрузку сразу
         // после ролика (ТЗ №12, доклад основателя: «выдача сохранена» была
@@ -540,12 +546,11 @@ window.Platform = (function () {
         // консоли прямо говорит, какой из двух случаев произошёл, не
         // требует читать код.
         var isSilentTimeout = e instanceof Error && e.message === 'timeout';
-        console.warn(
-          '[Platform] showRewarded (vk): ' +
-          (isSilentTimeout
-            ? 'площадка НЕ ОТВЕТИЛА за ' + REWARD_AD_TIMEOUT_MS + 'мс (ни успех, ни ошибка)'
-            : 'площадка явно отказала') +
-          ', выдаём бесплатно:', e);
+        var verdict = isSilentTimeout
+          ? 'НЕ ОТВЕТИЛА за ' + REWARD_AD_TIMEOUT_MS + 'мс (ни успех, ни ошибка)'
+          : 'явно отказала: ' + (function () { try { return JSON.stringify(e); } catch (je) { return String(e); } })();
+        console.warn('[Platform] showRewarded (vk): площадка ' + verdict + ', выдаём бесплатно:', e);
+        if (window.debugLog) window.debugLog('showRewarded: ИТОГ — площадка ' + verdict + ' -> выдаём бесплатно');
         if (onReward) onReward();
         vkFlushNow();
         if (onClose) onClose(true);
