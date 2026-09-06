@@ -86,12 +86,6 @@ window.Platform = (function () {
   var REWARD_AD_TIMEOUT_MS = 40000;
 
   var available = false;
-  // Фикс 7: реклама на ВК по факту ОТДАЁТСЯ (подтверждено на живом устройстве) —
-  // false бывает только при adblock у конкретного игрока. В этом случае кнопка
-  // подсказки больше НЕ прячется — остаётся и работает бесплатно (см. showRewarded).
-  var rewardedAvailable = true; // оптимистичный дефолт, уточняется в checkRewardedAvailable()
-  var HINT_LABEL_AD   = '▶ Открыть клетку'; // обещает ролик — только когда он реально будет
-  var HINT_LABEL_FREE = 'Открыть клетку';   // без иконки «плей» — реклама не обещана
 
   function hasBridge() {
     return typeof vkBridge !== 'undefined';
@@ -121,36 +115,11 @@ window.Platform = (function () {
         }
         available = true;
         console.log('[Platform] VK Bridge init OK.');
-        checkRewardedAvailable(); // не блокирует init() — фикс 4, см. ниже
         return true;
       })
       .catch(function (err) {
         console.error('[Platform] VKWebAppInit ошибка:', err);
         return false;
-      });
-  }
-
-  // Фикс 7: проверяем доступность rewarded ТОЛЬКО чтобы решить, платный или
-  // бесплатный режим подсказки — кнопку больше не прячем (main.js не трогаем,
-  // текст на кнопке правим здесь же). Если ВК начнёт отдавать рекламу —
-  // следующая проверка (при следующей загрузке) вернёт true, и кнопка сама
-  // вернётся в платный режим, без пересборки билда.
-  function checkRewardedAvailable() {
-    var timeoutP = new Promise(function (resolve) {
-      setTimeout(function () { resolve(false); }, 1500);
-    });
-    Promise.race([
-      vkBridge.send('VKWebAppCheckNativeAds', { ad_format: 'reward' }).then(function (res) {
-        return res && res.result === true;
-      }),
-      timeoutP,
-    ])
-      .catch(function () { return false; })
-      .then(function (rewardedOk) {
-        rewardedAvailable = rewardedOk;
-        var btn = document.getElementById('btn-hint');
-        if (btn) btn.textContent = rewardedOk ? HINT_LABEL_AD : HINT_LABEL_FREE;
-        console.log('[Platform] Rewarded ' + (rewardedOk ? 'доступен' : 'недоступен (adblock?) — подсказка бесплатная'));
       });
   }
 
@@ -487,7 +456,26 @@ window.Platform = (function () {
   }
 
   function showRewarded(onReward, onClose) {
-    if (!available || !rewardedAvailable) {
+    // 2026-09-06: раньше здесь стоял ещё !rewardedAvailable — флаг ОДНОГО
+    // рывка VKWebAppCheckNativeAds при init() с таймаутом всего 1500мс,
+    // кэшированный на всю сессию. Живой баг-репорт с мобильного ВК: если
+    // ЭТОТ рывок промахнулся (мобильная сеть медленнее 1500мс, или сам
+    // CheckNativeAds на мобильном отвечает иначе, чем на десктопе) —
+    // rewardedAvailable=false ЗАСТЫВАЛО на весь сеанс, и КАЖДЫЙ клик после
+    // исчерпания бесплатного баланса тихо выдавал подсказку бесплатно, ни
+    // разу не пытаясь показать настоящий ролик — дыра в монетизации, не
+    // видимая на десктопе (там та же самая проверка случайно проходила).
+    // Тот же побочный эффект — checkRewardedAvailable() ещё и подменяла
+    // #btn-hint.textContent целиком, стирая значок/бейдж/подпись из
+    // index.html (main.js/style.css больше не в курсе этой мутации).
+    // Теперь КАЖДЫЙ клик после исчерпания бесплатного баланса — это ОДНА
+    // настоящая попытка показать ролик, с собственным честным таймаутом
+    // REWARD_AD_TIMEOUT_MS (40с, см. ниже) и тем же бесплатным фолбэком на
+    // конкретно ЭТОЙ попытке — тот же студийный стандарт «не наказываем
+    // игрока за то, что площадка не смогла отработать», но без риска
+    // залипания на «бесплатно навсегда» из-за одного неудачного рывка при
+    // загрузке страницы.
+    if (!available) {
       if (onReward) onReward();
       if (onClose) onClose(true);
       return;
