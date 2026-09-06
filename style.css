@@ -209,9 +209,9 @@ html, body {
 .retention-rewarded-btn[hidden] { display: none; }
 
 /* ТЗ (RV-значок, Яндекс 4.5.1, усиление 2026-09-06): значок «экран +
-   треугольник» на обеих RV-точках (эта кнопка + #btn-hint в состоянии
-   рекламы, см. .hint-btn ниже) — рядом с текстом, тем же var(--accent),
-   что и остальной акцент студии, чтобы не потеряться ни в одной из 4
+   треугольник» на обеих RV-точках (эта кнопка + #btn-hint, см.
+   .hint-icon-wrap ниже) — рядом с текстом, тем же var(--accent), что и
+   остальной акцент студии, чтобы не потеряться ни в одной из 4
    косметических тем магазина (Задача I). Инлайн-flex обёртка вместо flex
    на самой кнопке — сохраняет её auto-ширину/центрирование (margin:0 auto
    выше рассчитан на shrink-to-fit кнопки, не на flex-контейнер). */
@@ -788,6 +788,8 @@ html, body {
 }
 .hint-btn {
   position: relative;
+  display: inline-flex;
+  align-items: center;
   max-width: 190px;
   border: 2px solid var(--ink-light);
   background: transparent;
@@ -798,34 +800,66 @@ html, body {
   opacity: 0.35;
   cursor: default;
 }
-/* ТЗ (RV-значок, Яндекс 4.5.1, 2026-09-06): подпись #btn-hint переключается
-   в updateHintBadge() между обычным текстом и «значок + Смотреть рекламу»
-   (innerHTML) — inline-flex держит значок и текст на одной строке без
-   переноса внутри .hint-btn (white-space:nowrap на самой кнопке). */
-#btn-hint [data-i18n="hint"] {
+/* ТЗ (RV-значок, Яндекс 4.5.1, усиление 2026-09-06 №2, прямая просьба
+   основателя): значок теперь ПОСТОЯННЫЙ элемент разметки (index.html, не
+   переключается JS) — раньше появлялся только ПОСЛЕ исчерпания баланса,
+   и сам переход ощущался как неожиданность. position:relative — якорь
+   для .hint-badge (ниже), который теперь сидит на углу значка, а не на
+   углу всей кнопки. */
+.hint-icon-wrap {
+  position: relative;
   display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  flex: none;
   vertical-align: middle;
+  margin-right: 8px;
+}
+/* ТЗ (RV-подпись, Яндекс 4.5.1, заход №3, 2026-09-06): "Подсказка" —
+   ПОСТОЯННЫЙ, единственный главный текст кнопки (реагирует основатель:
+   заход №2 при исчерпании баланса менял его целиком на «Смотреть
+   рекламу» — кнопка переставала читаться как инструмент-подсказка среди
+   «Закрасить»/«Крестик»). Факт рекламы — вторичная мелкая строка ниже,
+   см. .hint-ad-caption. */
+.hint-label {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.2;
+  min-width: 0;
+}
+/* pointer-events наследуются нормально (не задаём none) — это часть текста
+   кнопки, не декоративный оверлей. visibility, не hidden/display:none —
+   строка всегда резервирует свою высоту, чтобы кнопка не меняла размер
+   (и не тянула за собой всю .mode-bar, align-items:stretch по умолчанию)
+   при переключении между «есть бесплатные» и «дальше реклама» — переключает
+   .is-visible updateHintBadge() в main.js. */
+.hint-ad-caption {
+  font-size: 0.68em;
+  font-weight: 400;
+  visibility: hidden;
+}
+.hint-ad-caption.is-visible {
+  visibility: visible;
 }
 /* ТЗ №03, Фаза 1: видимый баланс бонусных подсказок (награда 2-го дня
    серии входов, ТЗ №01 — до этого жила только 3с тоста и пропадала).
    pointer-events:none — бейдж никогда не перехватывает тап, весь клик
-   уходит на саму кнопку. Смещение -6/-7px внутрь запаса паддинга
-   .mode-bar (min 16px справа) — не уходит за экран на 320×568/568×320. */
+   уходит на саму кнопку. Якорь — .hint-icon-wrap (значок), не сама
+   кнопка (см. правку 2026-09-06 №2 выше); смещение подобрано под 15px
+   значок так, чтобы бейдж не уходил за правый край .mode-bar на
+   320×568/568×320 (запас 16px, см. живой прогон — tools/test_hint_badge.js). */
 .hint-badge {
   position: absolute;
-  top: -7px;
+  top: -6px;
   right: -6px;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
   border-radius: 999px;
   background: var(--ink);
   color: var(--bg);
-  font-size: 0.62rem;
+  font-size: 0.58rem;
   font-weight: 700;
-  line-height: 18px;
+  line-height: 16px;
   text-align: center;
   pointer-events: none;
 }
