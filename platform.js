@@ -492,6 +492,14 @@ window.Platform = (function () {
     });
   }
 
+  // 2026-09-07 (аудит по запросу координатора, тот же класс бага, что
+  // showRewarded/load() уже чинили раньше): молчащий мост здесь оставлял
+  // бы игру на паузе НАВСЕГДА — main.js::maybeShowInterstitial ставит
+  // Nonogram.setPaused(true) ДО вызова, снимает только в колбэке onDone.
+  // Найдено при аудите пути загрузки (ТЗ №47), не на самом пути загрузки —
+  // но риск идентичен, чинится тем же приёмом.
+  var INTERSTITIAL_TIMEOUT_MS = 15000; // короче REWARD_AD_TIMEOUT_MS — не обещание награды, можно решительнее
+
   // Полноэкранная реклама. onDone() зовём в любом исходе.
   function showInterstitial(onDone) {
     var finished = false;
@@ -499,9 +507,9 @@ window.Platform = (function () {
 
     if (!available) { done(); return; }
     vkFlushNow(); // событие «перед рекламой» — не ждём дебаунса
-    vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'interstitial' })
+    withTimeout(vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'interstitial' }), INTERSTITIAL_TIMEOUT_MS)
       .then(done)
-      .catch(function (e) { console.warn('[Platform] interstitial недоступен:', e); done(); });
+      .catch(function (e) { console.warn('[Platform] interstitial недоступен/не ответил:', e); done(); });
   }
 
   // Реклама за награду. onReward() — выдать награду. onClose() — вернуть
