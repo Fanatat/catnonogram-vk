@@ -164,7 +164,13 @@ html, body {
 /* Debug-оверлей (2026-09-06, ?debug=1) — z-index выше .ad-loading-overlay
    (60), чтобы строки лога были видны, даже пока идёт ожидание рекламы.
    Тёмный монохромный стиль намеренно НЕ похож на бумажную тему игры —
-   сразу видно, что это служебная панель, не часть UI. */
+   сразу видно, что это служебная панель, не часть UI.
+   БАГ (2026-09-07, живой скриншот основателя): панель до 42vh высотой
+   перекрывала боевые кнопки внизу экрана (#btn-hint, #retention-rewarded-btn)
+   — инструмент диагностики ломал ровно тот сценарий, который должен
+   измерять. pointer-events:none на контейнере — тапы проходят СКВОЗЬ
+   панель к настоящим кнопкам под ней, независимо от того, насколько
+   панель разрослась; auto возвращён только кнопке очистки. */
 .debug-overlay {
   position: fixed;
   left: 0; right: 0; bottom: 0;
@@ -174,6 +180,7 @@ html, body {
   flex-direction: column;
   background: rgba(0, 0, 0, 0.85);
   font-family: monospace;
+  pointer-events: none;
 }
 .debug-overlay[hidden] { display: none; }
 .debug-overlay-head {
@@ -196,6 +203,7 @@ html, body {
   line-height: 1;
   padding: 0 6px;
   cursor: pointer;
+  pointer-events: auto;
 }
 .debug-log {
   overflow-y: auto;

@@ -53,16 +53,21 @@ document.addEventListener('DOMContentLoaded', function () {
   // Скрытая активация debug-оверлея тапами (2026-09-07, задача #47):
   // в мобильном приложении ВК адресной строки нет, ?debug=1 дописать
   // некуда — ровно там и живёт баг с rewarded-рекламой. 5 тапов подряд
-  // (в течение 2с) по заголовку меню («Нонограмма») включают тот же
-  // оверлей, что и ?debug=1. Обычный игрок так по заголовку не жмёт —
-  // риск случайной активации фактически нулевой.
+  // (в течение 2с) включают тот же оверлей, что и ?debug=1. Обычный игрок
+  // так не жмёт — риск случайной активации фактически нулевой.
+  //
+  // ДВЕ точки, ОДИН общий счётчик (находка сессии-напарника, game3/
+  // color_sort, та же ночь): изначально висело только на заголовке меню
+  // (.game-title) — бесполезно ровно в сценарии, где нужнее всего: игра
+  // зависла на экране ЗАГРУЗКИ, меню не показано, .game-title скрыт
+  // (display:none внутри неактивного .screen) и физически не может
+  // получить клик. #loading — единственный экран без единой боевой
+  // кнопки, тапать по нему нечего портить.
   (function () {
     var TAP_COUNT = 5;
     var TAP_WINDOW_MS = 2000;
     var taps = [];
-    var titleEl = document.querySelector('.game-title');
-    if (!titleEl) return;
-    titleEl.addEventListener('click', function () {
+    function onTap() {
       var now = Date.now();
       taps.push(now);
       taps = taps.filter(function (t) { return now - t <= TAP_WINDOW_MS; });
@@ -71,8 +76,12 @@ document.addEventListener('DOMContentLoaded', function () {
       if (DEBUG_MODE) return;
       DEBUG_MODE = true;
       window.debugLog('env: AndroidBridge=' + !!window.AndroidBridge + ' UA=' + navigator.userAgent.slice(0, 70));
-      window.debugLog('debug-режим включён 5 тапами по заголовку');
-    });
+      window.debugLog('debug-режим включён 5 тапами');
+    }
+    var loadingEl = document.getElementById('loading');
+    if (loadingEl) loadingEl.addEventListener('click', onTap);
+    var titleEl = document.querySelector('.game-title');
+    if (titleEl) titleEl.addEventListener('click', onTap);
   })();
 
   // ПК-модерация (п.1.6.2.7): модератор кликал ПКМ по игровому полю —
