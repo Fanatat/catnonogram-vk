@@ -14,7 +14,11 @@
 // DOMContentLoaded — элементы #debug-overlay/#debug-log физически уже в
 // DOM к моменту выполнения этого файла (script лежит в конце body).
 var DEBUG_MODE = /(^|[?&])debug=1(&|$)/.test(location.search);
-window.debugLog = function (line) {
+// opts.big (2026-09-07, скриншот основателя: закрыл игру на 10-15с, не
+// дождавшись итога) — крупная выделенная строка для финального исхода
+// showRewarded, чтобы её нельзя было принять за очередную строку среди
+// одинаковых и закрыть игру раньше времени.
+window.debugLog = function (line, opts) {
   if (!DEBUG_MODE) return;
   var overlay = document.getElementById('debug-overlay');
   var log = document.getElementById('debug-log');
@@ -24,6 +28,7 @@ window.debugLog = function (line) {
   var ts = ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2) + ':' +
     ('0' + now.getSeconds()).slice(-2) + '.' + ('00' + now.getMilliseconds()).slice(-3);
   var row = document.createElement('div');
+  if (opts && opts.big) row.className = 'debug-log-final';
   row.textContent = '[' + ts + '] ' + line;
   log.appendChild(row);
   log.scrollTop = log.scrollHeight;
@@ -393,6 +398,31 @@ document.addEventListener('DOMContentLoaded', function () {
     if (el) el.hidden = true;
   }
 
+  // Защита от повторной отправки (2026-09-07, живой скриншот основателя с
+  // реального Android + тот же паттерн у game3/color_sort той же ночью):
+  // пока предыдущий Platform.showRewarded не вернул исход, повторный клик
+  // по ЛЮБОЙ из двух RV-кнопок (#btn-hint, #retention-rewarded-btn) —
+  // Platform.showRewarded один на оба сайта вызова — молча игнорируется
+  // (с записью в лог), не уходит вторым вызовом показа rewarded-ролика,
+  // который площадка маршрутизирует по общему каналу ответов (минимум
+  // неопределённое поведение).
+  //
+  // ВАЖНО: гейт — это ТОЛЬКО внутренний флаг, кнопки физически НЕ
+  // дизейблятся (нет .disabled = true нигде здесь). tools/test_
+  // rewarded_loading_ui.js жёстко проверяет обратное: «п.190/шрам Color
+  // Sort: кнопка НЕ дизейблена во время ожидания» — прошлый инцидент, когда
+  // задизейбленная на время ожидания кнопка привела к худшему UX, чем
+  // отсутствие защиты. Здесь тот же принцип соблюдён: игрок видит активную
+  // кнопку и МОЖЕТ по ней кликать, просто повторные клики в это окно
+  // молча не уходят в сеть второй раз — сеть, не интерфейс.
+  var _rewardedGateOpen = true;
+  function lockRewardedGate() {
+    _rewardedGateOpen = false;
+  }
+  function unlockRewardedGate() {
+    _rewardedGateOpen = true;
+  }
+
   // Продвигает раздатчик на текущий момент; при реальной выдаче — сохраняет
   // и показывает отклик (п.2.4: тихих улучшений не бывает). Дёшево вызывать
   // часто (showMenu/showCategory) — если тактов не набежало, no-op.
@@ -505,13 +535,20 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function onRewardedButtonClick() {
     window.debugLog('click: #retention-rewarded-btn');
+    if (!_rewardedGateOpen) {
+      window.debugLog('click: #retention-rewarded-btn проигнорирован — предыдущий запрос ещё в полёте');
+      return;
+    }
     Sound.resumeContext();
     // Реклама недоступна (adblock/нет филла) -> Platform.showRewarded зовёт
     // onReward сразу же, бесплатно (см. adapters/vk_bridge.js) — кнопка не
     // прячется и не блокируется на время показа (п.190, шрам Color Sort).
+    // lockRewardedGate() ниже НЕ трогает кнопку — только внутренний флаг
+    // (см. комментарий у неё), п.190 этим не затрагивается вовсе.
     // showAdLoadingOverlay/hide — отдельный явный слой поверх, не трогает
     // саму кнопку (см. комментарий у showAdLoadingOverlay()).
     showAdLoadingOverlay();
+    lockRewardedGate();
     Platform.showRewarded(function onReward() {
       var before = _retentionState.dripOpened;
       _retentionState = Retention.grantDrip(_retentionState, RETENTION_CONFIG, RETENTION_CONFIG.dripPerTick);
@@ -523,6 +560,7 @@ document.addEventListener('DOMContentLoaded', function () {
           : I18N.t('retentionRewardDrip') + ' (' + granted + ')');
       }
     }, function onClose() {
+      unlockRewardedGate();
       hideAdLoadingOverlay();
       renderRetentionDripLine();
       renderRewardedButton();
@@ -1484,6 +1522,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function onHintClick() {
     window.debugLog('click: #btn-hint (bonusHints=' + _bonusHints + ')');
+    if (!_rewardedGateOpen) {
+      window.debugLog('click: #btn-hint проигнорирован — предыдущий запрос ещё в полёте');
+      return;
+    }
     var hint = Nonogram.findHint();
     if (!hint) {
       document.getElementById('btn-hint').disabled = true;
@@ -1514,9 +1556,11 @@ document.addEventListener('DOMContentLoaded', function () {
     // оставляет игрока смотреть на молча замершую доску (баг-репорт
     // основателя 2026-09-06).
     showAdLoadingOverlay();
+    lockRewardedGate();
     Platform.showRewarded(
       function () { pendingHint = hint; },
       function () {
+        unlockRewardedGate();
         hideAdLoadingOverlay();
         Nonogram.setPaused(false);
         Sound.resume();

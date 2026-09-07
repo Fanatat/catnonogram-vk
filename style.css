@@ -206,6 +206,15 @@ html, body {
   word-break: break-word;
 }
 .debug-log > div { border-bottom: 1px solid rgba(255, 255, 255, 0.08); padding: 2px 0; }
+/* Финальный исход showRewarded (2026-09-07) — крупнее и заметнее строк
+   ожидания, чтобы не потеряться среди одинаковых "жду ответа моста: …". */
+.debug-log-final {
+  font-size: 14px;
+  font-weight: bold;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+  padding: 4px 4px !important;
+}
 
 /* Меню */
 .menu-head { text-align: center; margin-bottom: 48px; }
