@@ -7,6 +7,7 @@ window.I18N = (function () {
   var STRINGS = {
     ru: {
       loading:   'Загрузка…',
+      adLoading: 'Загрузка рекламы…',
       gameTitle: 'Кот и японские кроссворды',
       gameSub:   'японский кроссворд',
       play:      'Играть',
@@ -182,6 +183,7 @@ window.I18N = (function () {
     },
     en: {
       loading:   'Loading…',
+      adLoading: 'Loading ad…',
       gameTitle: 'Picture Cross',
       gameSub:   'japanese crossword',
       play:      'Play',

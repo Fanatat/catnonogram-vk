@@ -2,7 +2,73 @@
    main.js — точка входа.
    ============================================================ */
 
+// Debug-оверлей (2026-09-06, живой Android-баг с rewarded-рекламой):
+// у основателя нет под рукой ПК+кабеля для chrome://inspect (remote
+// debugging Android WebView) — печатаем те же строки, что шли бы в
+// консоль, прямо на экране, чтобы можно было сфотографировать телефон.
+// Активируется ?debug=1 — invisible по умолчанию, нулевой риск для
+// обычных игроков. ГЛОБАЛЬНАЯ функция (не заперта в замыкании ниже) —
+// adapters/vk_bridge.js и platform.js грузятся РАНЬШЕ этого файла, но
+// зовут window.debugLog только по клику, т.е. уже после того, как этот
+// скрипт целиком выполнился и window.debugLog определён; определяем ВНЕ
+// DOMContentLoaded — элементы #debug-overlay/#debug-log физически уже в
+// DOM к моменту выполнения этого файла (script лежит в конце body).
+var DEBUG_MODE = /(^|[?&])debug=1(&|$)/.test(location.search);
+window.debugLog = function (line) {
+  if (!DEBUG_MODE) return;
+  var overlay = document.getElementById('debug-overlay');
+  var log = document.getElementById('debug-log');
+  if (!overlay || !log) return;
+  overlay.hidden = false;
+  var now = new Date();
+  var ts = ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2) + ':' +
+    ('0' + now.getSeconds()).slice(-2) + '.' + ('00' + now.getMilliseconds()).slice(-3);
+  var row = document.createElement('div');
+  row.textContent = '[' + ts + '] ' + line;
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+  // Дублируем в консоль — на десктопе/эмуляторе удобнее читать оттуда,
+  // дублирование ничему не мешает.
+  console.log('[debug] ' + line);
+};
+if (DEBUG_MODE) {
+  window.debugLog('env: AndroidBridge=' + !!window.AndroidBridge + ' UA=' + navigator.userAgent.slice(0, 70));
+}
+
 document.addEventListener('DOMContentLoaded', function () {
+
+  var debugClearBtn = document.getElementById('debug-clear');
+  if (debugClearBtn) {
+    debugClearBtn.addEventListener('click', function () {
+      var log = document.getElementById('debug-log');
+      if (log) log.innerHTML = '';
+    });
+  }
+
+  // Скрытая активация debug-оверлея тапами (2026-09-07, задача #47):
+  // в мобильном приложении ВК адресной строки нет, ?debug=1 дописать
+  // некуда — ровно там и живёт баг с rewarded-рекламой. 5 тапов подряд
+  // (в течение 2с) по заголовку меню («Нонограмма») включают тот же
+  // оверлей, что и ?debug=1. Обычный игрок так по заголовку не жмёт —
+  // риск случайной активации фактически нулевой.
+  (function () {
+    var TAP_COUNT = 5;
+    var TAP_WINDOW_MS = 2000;
+    var taps = [];
+    var titleEl = document.querySelector('.game-title');
+    if (!titleEl) return;
+    titleEl.addEventListener('click', function () {
+      var now = Date.now();
+      taps.push(now);
+      taps = taps.filter(function (t) { return now - t <= TAP_WINDOW_MS; });
+      if (taps.length < TAP_COUNT) return;
+      taps = [];
+      if (DEBUG_MODE) return;
+      DEBUG_MODE = true;
+      window.debugLog('env: AndroidBridge=' + !!window.AndroidBridge + ' UA=' + navigator.userAgent.slice(0, 70));
+      window.debugLog('debug-режим включён 5 тапами по заголовку');
+    });
+  })();
 
   // ПК-модерация (п.1.6.2.7): модератор кликал ПКМ по игровому полю —
   // каждый клик открывал системное контекстное меню браузера. Гасим
@@ -310,6 +376,23 @@ document.addEventListener('DOMContentLoaded', function () {
     }, 3200);
   }
 
+  // RV-загрузка (2026-09-06, баг-репорт основателя): Platform.showRewarded
+  // может занять до 40с (REWARD_AD_TIMEOUT_MS/AD_HANG_TIMEOUT_MS, оба
+  // адаптера) — без явного индикатора это неотличимо от зависшей игры.
+  // Пара функций оборачивает КАЖДЫЙ вызов showRewarded (onHintClick,
+  // onRewardedButtonClick) — единая точка, а не дублированная логика на
+  // каждом сайте вызова. #ad-loading-overlay НЕ прячет и не дизейблит
+  // саму кнопку/экран под собой (п.190/шрам Color Sort остаётся в силе) —
+  // это отдельный, временный, явный слой поверх.
+  function showAdLoadingOverlay() {
+    var el = document.getElementById('ad-loading-overlay');
+    if (el) el.hidden = false;
+  }
+  function hideAdLoadingOverlay() {
+    var el = document.getElementById('ad-loading-overlay');
+    if (el) el.hidden = true;
+  }
+
   // Продвигает раздатчик на текущий момент; при реальной выдаче — сохраняет
   // и показывает отклик (п.2.4: тихих улучшений не бывает). Дёшево вызывать
   // часто (showMenu/showCategory) — если тактов не набежало, no-op.
@@ -421,10 +504,14 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   function onRewardedButtonClick() {
+    window.debugLog('click: #retention-rewarded-btn');
     Sound.resumeContext();
     // Реклама недоступна (adblock/нет филла) -> Platform.showRewarded зовёт
     // onReward сразу же, бесплатно (см. adapters/vk_bridge.js) — кнопка не
     // прячется и не блокируется на время показа (п.190, шрам Color Sort).
+    // showAdLoadingOverlay/hide — отдельный явный слой поверх, не трогает
+    // саму кнопку (см. комментарий у showAdLoadingOverlay()).
+    showAdLoadingOverlay();
     Platform.showRewarded(function onReward() {
       var before = _retentionState.dripOpened;
       _retentionState = Retention.grantDrip(_retentionState, RETENTION_CONFIG, RETENTION_CONFIG.dripPerTick);
@@ -436,6 +523,7 @@ document.addEventListener('DOMContentLoaded', function () {
           : I18N.t('retentionRewardDrip') + ' (' + granted + ')');
       }
     }, function onClose() {
+      hideAdLoadingOverlay();
       renderRetentionDripLine();
       renderRewardedButton();
     });
@@ -1395,6 +1483,7 @@ document.addEventListener('DOMContentLoaded', function () {
   /* ---- Подсказка за рекламу ---- */
 
   function onHintClick() {
+    window.debugLog('click: #btn-hint (bonusHints=' + _bonusHints + ')');
     var hint = Nonogram.findHint();
     if (!hint) {
       document.getElementById('btn-hint').disabled = true;
@@ -1420,9 +1509,15 @@ document.addEventListener('DOMContentLoaded', function () {
     if (_currentLevel >= 0) flushBoardSave(_currentLevel);
     Sound.suspend();
     Nonogram.setPaused(true);
+    // Nonogram.setPaused(true) уже блокирует поле — showAdLoadingOverlay()
+    // объясняет ПОЧЕМУ (до 40с ожидания, REWARD_AD_TIMEOUT_MS), а не
+    // оставляет игрока смотреть на молча замершую доску (баг-репорт
+    // основателя 2026-09-06).
+    showAdLoadingOverlay();
     Platform.showRewarded(
       function () { pendingHint = hint; },
       function () {
+        hideAdLoadingOverlay();
         Nonogram.setPaused(false);
         Sound.resume();
         if (pendingHint) {
