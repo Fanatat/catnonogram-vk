@@ -84,6 +84,7 @@ window.Platform = (function () {
   // и снимает её только в колбэке. Значение — эталон game3/color_sort/
   // vk_platform.js REWARD_AD_TIMEOUT_MS (число не придумано, Р-Э5).
   var REWARD_AD_TIMEOUT_MS = 40000;
+  var _rewardedInFlight = false; // защита от повторной отправки, см. showRewarded
 
   var available = false;
 
@@ -498,6 +499,21 @@ window.Platform = (function () {
       if (onClose) onClose(true);
       return;
     }
+    // Защита от повторной отправки (2026-09-07, живой скриншот основателя
+    // с реального Android + тот же паттерн у game3/color_sort той же
+    // ночью): без неё второй клик по кнопке подсказки, пока первый запрос
+    // ещё «в полёте», уходит вторым VKWebAppShowNativeAds(reward) — два
+    // одновременных запроса одного формата маршрутизируются мостом по
+    // одному и тому же общему каналу ответов, минимум неопределённое
+    // поведение. Основной барьер — main.js дизейблит саму кнопку на время
+    // ожидания (см. _rewardedGate там); эта проверка — второй, независимый
+    // рубеж на случай иного пути вызова. Молча игнорируем, не трогаем
+    // колбэки — первый вызов доведёт СВОЙ onReward/onClose до конца сам.
+    if (_rewardedInFlight) {
+      if (window.debugLog) window.debugLog('showRewarded: запрос уже в полёте — повторный вызов проигнорирован');
+      return;
+    }
+    _rewardedInFlight = true;
     vkFlushNow(); // событие «перед рекламой» — не ждём дебаунса
     // 2026-09-06: баг-репорт основателя — на мобильном ВК-клиенте
     // VKWebAppShowNativeAds(reward) реально не показывает ролик (баннер
@@ -513,10 +529,24 @@ window.Platform = (function () {
     // показов, не отменяет и не заменяет предохранитель ниже (он остаётся
     // на случай, если и подставить нечего).
     if (window.debugLog) window.debugLog('showRewarded: -> AndroidBridge/мост VKWebAppShowNativeAds(reward, useWaterfall=true), жду до ' + REWARD_AD_TIMEOUT_MS + 'мс');
+    // Счётчик ожидания (2026-09-07, живой скриншот основателя: закрыл игру
+    // через 10-15с, не дождавшись итога — пустой лог читается как «зависло»
+    // задолго до настоящего таймаута). Раз в 10с, формат согласован с
+    // сессией game3/color_sort (тот же баг, тот же вечер) — одинаковые
+    // строки на скриншотах обеих игр читаются рядом без перевода в уме.
+    var _elapsedMs = 0;
+    var _waitTick = setInterval(function () {
+      _elapsedMs += 10000;
+      if (window.debugLog) {
+        window.debugLog('[rewarded] жду ответа моста: ' + (_elapsedMs / 1000) + 'с/' + (REWARD_AD_TIMEOUT_MS / 1000) + 'с');
+      }
+    }, 10000);
     withTimeout(vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'reward', useWaterfall: true }), REWARD_AD_TIMEOUT_MS)
       .then(function (res) {
+        clearInterval(_waitTick);
+        _rewardedInFlight = false;
         var rewarded = res.result === true;
-        if (window.debugLog) window.debugLog('showRewarded: мост ОТВЕТИЛ, result=' + res.result);
+        if (window.debugLog) window.debugLog('showRewarded: мост ОТВЕТИЛ, result=' + res.result, { big: true });
         if (rewarded && onReward) onReward();
         // Выдача обязана пережить немедленное закрытие/перезагрузку сразу
         // после ролика (ТЗ №12, доклад основателя: «выдача сохранена» была
@@ -527,6 +557,8 @@ window.Platform = (function () {
         if (onClose) onClose(rewarded);
       })
       .catch(function (e) {
+        clearInterval(_waitTick);
+        _rewardedInFlight = false;
         // Тот же .catch() ловит и штатный сбой моста, и таймаут-предохранитель
         // (withTimeout реджектит по истечении REWARD_AD_TIMEOUT_MS) — оба
         // исхода по студийному стандарту выдают награду бесплатно.
@@ -550,7 +582,7 @@ window.Platform = (function () {
           ? 'НЕ ОТВЕТИЛА за ' + REWARD_AD_TIMEOUT_MS + 'мс (ни успех, ни ошибка)'
           : 'явно отказала: ' + (function () { try { return JSON.stringify(e); } catch (je) { return String(e); } })();
         console.warn('[Platform] showRewarded (vk): площадка ' + verdict + ', выдаём бесплатно:', e);
-        if (window.debugLog) window.debugLog('showRewarded: ИТОГ — площадка ' + verdict + ' -> выдаём бесплатно');
+        if (window.debugLog) window.debugLog('showRewarded: ИТОГ — площадка ' + verdict + ' -> выдаём бесплатно', { big: true });
         if (onReward) onReward();
         vkFlushNow();
         if (onClose) onClose(true);
