@@ -361,6 +361,17 @@ window.Platform = (function () {
     return { width: w, height: h };
   }
 
+  // 2026-09-07: живой скриншот основателя — reward ПОКАЗАЛСЯ впервые за
+  // всё расследование #47 ровно в тот момент, когда он сам закрыл баннер
+  // (пожаловался на него через меню баннера). До этого — молчание; после
+  // возврата баннера — снова молчание. Гипотеза координатора: один общий
+  // рекламный слот на мобильном ВК-клиенте, баннер и rewarded конкурируют
+  // за него. _bannerActive — знаем ли мы прямо сейчас, что баннер реально
+  // показан площадкой (не путать с _bannerClosedByUser — тот НАВСЕГДА на
+  // сессию, этот включается/выключается каждым показом/скрытием).
+  var _bannerActive = false;
+  var BANNER_HIDE_TIMEOUT_MS = 5000; // не блокируем rewarded дольше этого, если скрытие не отвечает
+
   function showBannerAd() {
     if (!available || _bannerClosedByUser) return;
     var desktop = isDesktopPlatform();
@@ -375,6 +386,7 @@ window.Platform = (function () {
     vkBridge.send('VKWebAppShowBannerAd', params)
       .then(function () {
         if (window.debugLog) window.debugLog('showBannerAd: мост ОТВЕТИЛ (успех)');
+        _bannerActive = true;
         // Оптимистично, СРАЗУ по запасному размеру (ТЗ №10, шаг B) — не
         // ждём подтверждения факта resize, чтобы не было окна, где баннер
         // уже показан, а карточки ещё не подвинуты (тот самый баг ТЗ №10).
@@ -411,6 +423,48 @@ window.Platform = (function () {
       });
   }
 
+  // Скрывает баннер ПЕРЕД запросом rewarded (гипотеза общего слота, см.
+  // комментарий у _bannerActive). Никогда не откладывает и не блокирует
+  // rewarded дольше BANNER_HIDE_TIMEOUT_MS — если скрытие не ответило,
+  // просто продолжаем запрос как есть (баннер тогда, возможно, и правда
+  // съедает слот, но это лучше, чем застрять на самом скрытии). Каждый
+  // шаг — в лог, чтобы следующий скриншот основателя сразу подтвердил или
+  // опроверг гипотезу.
+  function hideBannerForRewarded() {
+    if (!_bannerActive) {
+      if (window.debugLog) window.debugLog('rewarded/баннер: баннер не активен — скрывать нечего');
+      return Promise.resolve(false);
+    }
+    if (window.debugLog) window.debugLog('rewarded/баннер: -> скрываю (VKWebAppHideBannerAd), гипотеза — общий рекламный слот');
+    return withTimeout(vkBridge.send('VKWebAppHideBannerAd'), BANNER_HIDE_TIMEOUT_MS)
+      .then(function () {
+        _bannerActive = false;
+        if (window.debugLog) window.debugLog('rewarded/баннер: скрыт, мост подтвердил');
+        return true;
+      })
+      .catch(function (e) {
+        var isTimeout = e instanceof Error && e.message === 'timeout';
+        if (window.debugLog) {
+          window.debugLog('rewarded/баннер: скрыть НЕ удалось (' +
+            (isTimeout ? 'не ответил за ' + BANNER_HIDE_TIMEOUT_MS + 'мс' : (function () { try { return JSON.stringify(e); } catch (je) { return String(e); } })()) +
+            ') — продолжаю запрос rewarded как есть');
+        }
+        return false; // не трогали — не будем и восстанавливать
+      });
+  }
+
+  // Возвращает баннер обратно после того, как исход rewarded (успех/отказ/
+  // таймаут) уже известен — wasHidden приходит из hideBannerForRewarded().
+  function restoreBannerAfterRewarded(wasHidden) {
+    if (!wasHidden) return;
+    if (_bannerClosedByUser) {
+      if (window.debugLog) window.debugLog('rewarded/баннер: не возвращаю — игрок сам закрыл его ранее в этой сессии');
+      return;
+    }
+    if (window.debugLog) window.debugLog('rewarded/баннер: <- возвращаю обратно (VKWebAppShowBannerAd)');
+    showBannerAd();
+  }
+
   if (hasBridge() && vkBridge.subscribe) {
     vkBridge.subscribe(function (e) {
       if (!e || !e.detail) return;
@@ -421,6 +475,7 @@ window.Platform = (function () {
       // здесь безопасный no-op (мы и так ничего не резервировали).
       if (e.detail.type === 'VKWebAppBannerAdClosedByUser') {
         _bannerClosedByUser = true;
+        _bannerActive = false;
         _platformReservesSpace = false;
         applyBannerReserve(0);
       }
@@ -505,8 +560,8 @@ window.Platform = (function () {
     // ещё «в полёте», уходит вторым VKWebAppShowNativeAds(reward) — два
     // одновременных запроса одного формата маршрутизируются мостом по
     // одному и тому же общему каналу ответов, минимум неопределённое
-    // поведение. Основной барьер — main.js дизейблит саму кнопку на время
-    // ожидания (см. _rewardedGate там); эта проверка — второй, независимый
+    // поведение. Основной барьер — логический гейт в main.js (_rewardedGateOpen,
+    // кнопка НЕ дизейблится, п.190); эта проверка — второй, независимый
     // рубеж на случай иного пути вызова. Молча игнорируем, не трогаем
     // колбэки — первый вызов доведёт СВОЙ onReward/onClose до конца сам.
     if (_rewardedInFlight) {
@@ -528,65 +583,75 @@ window.Platform = (function () {
     // наличии, вместо немедленного отказа — увеличивает реальную долю
     // показов, не отменяет и не заменяет предохранитель ниже (он остаётся
     // на случай, если и подставить нечего).
-    if (window.debugLog) window.debugLog('showRewarded: -> AndroidBridge/мост VKWebAppShowNativeAds(reward, useWaterfall=true), жду до ' + REWARD_AD_TIMEOUT_MS + 'мс');
-    // Счётчик ожидания (2026-09-07, живой скриншот основателя: закрыл игру
-    // через 10-15с, не дождавшись итога — пустой лог читается как «зависло»
-    // задолго до настоящего таймаута). Раз в 10с, формат согласован с
-    // сессией game3/color_sort (тот же баг, тот же вечер) — одинаковые
-    // строки на скриншотах обеих игр читаются рядом без перевода в уме.
-    var _elapsedMs = 0;
-    var _waitTick = setInterval(function () {
-      _elapsedMs += 10000;
-      if (window.debugLog) {
-        window.debugLog('[rewarded] жду ответа моста: ' + (_elapsedMs / 1000) + 'с/' + (REWARD_AD_TIMEOUT_MS / 1000) + 'с');
-      }
-    }, 10000);
-    withTimeout(vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'reward', useWaterfall: true }), REWARD_AD_TIMEOUT_MS)
-      .then(function (res) {
-        clearInterval(_waitTick);
-        _rewardedInFlight = false;
-        var rewarded = res.result === true;
-        if (window.debugLog) window.debugLog('showRewarded: мост ОТВЕТИЛ, result=' + res.result, { big: true });
-        if (rewarded && onReward) onReward();
-        // Выдача обязана пережить немедленное закрытие/перезагрузку сразу
-        // после ролика (ТЗ №12, доклад основателя: «выдача сохранена» была
-        // ложью — saveProgress() внутри onReward() лишь ставит запись в
-        // обычную 10с-очередь дебаунса адаптера; без форс-флаша здесь она
-        // терялась при быстром уходе со страницы).
-        if (rewarded) vkFlushNow();
-        if (onClose) onClose(rewarded);
-      })
-      .catch(function (e) {
-        clearInterval(_waitTick);
-        _rewardedInFlight = false;
-        // Тот же .catch() ловит и штатный сбой моста, и таймаут-предохранитель
-        // (withTimeout реджектит по истечении REWARD_AD_TIMEOUT_MS) — оба
-        // исхода по студийному стандарту выдают награду бесплатно.
-        //
-        // 2026-09-06 (расследование): различаем ДВА разных исхода в самом
-        // тексте лога — раньше оба выглядели одинаково "недоступен/таймаут",
-        // хотя это РАЗНЫЕ ситуации на стороне площадки:
-        //   - e.message === 'timeout' (наш withTimeout) -> нативная сторона
-        //     ВООБЩЕ не ответила за 40с — ни успехом, ни error_type. Живая
-        //     проверка (tools/investigate_vk_android_bridge.js, реальный
-        //     vk-bridge.min.js через мок window.AndroidBridge) подтвердила:
-        //     это не наш баг тайминга — жест не протухает, вызов уходит
-        //     синхронно, <10мс после клика.
-        //   - иначе -> площадка ЯВНО ответила ошибкой (объект с error_type
-        //     от самого моста) — сюда попадает и обычный сетевой сбой.
-        // Если баг воспроизводится на реальном устройстве — эта строка в
-        // консоли прямо говорит, какой из двух случаев произошёл, не
-        // требует читать код.
-        var isSilentTimeout = e instanceof Error && e.message === 'timeout';
-        var verdict = isSilentTimeout
-          ? 'НЕ ОТВЕТИЛА за ' + REWARD_AD_TIMEOUT_MS + 'мс (ни успех, ни ошибка)'
-          : 'явно отказала: ' + (function () { try { return JSON.stringify(e); } catch (je) { return String(e); } })();
-        console.warn('[Platform] showRewarded (vk): площадка ' + verdict + ', выдаём бесплатно:', e);
-        if (window.debugLog) window.debugLog('showRewarded: ИТОГ — площадка ' + verdict + ' -> выдаём бесплатно', { big: true });
-        if (onReward) onReward();
-        vkFlushNow();
-        if (onClose) onClose(true);
-      });
+    // 2026-09-07: живой скриншот основателя — единственный успешный показ
+    // rewarded за всё расследование совпал ровно с окном, когда баннера на
+    // экране не было (он сам закрыл баннер через его меню). Гипотеза
+    // координатора: общий рекламный слот на мобильном ВК — баннер и
+    // rewarded конкурируют. Скрываем баннер ПЕРЕД запросом, возвращаем
+    // ПОСЛЕ исхода (см. hideBannerForRewarded/restoreBannerAfterRewarded).
+    hideBannerForRewarded().then(function (bannerWasHidden) {
+      if (window.debugLog) window.debugLog('showRewarded: -> AndroidBridge/мост VKWebAppShowNativeAds(reward, useWaterfall=true), жду до ' + REWARD_AD_TIMEOUT_MS + 'мс');
+      // Счётчик ожидания (2026-09-07, живой скриншот основателя: закрыл игру
+      // через 10-15с, не дождавшись итога — пустой лог читается как «зависло»
+      // задолго до настоящего таймаута). Раз в 10с, формат согласован с
+      // сессией game3/color_sort (тот же баг, тот же вечер) — одинаковые
+      // строки на скриншотах обеих игр читаются рядом без перевода в уме.
+      var _elapsedMs = 0;
+      var _waitTick = setInterval(function () {
+        _elapsedMs += 10000;
+        if (window.debugLog) {
+          window.debugLog('[rewarded] жду ответа моста: ' + (_elapsedMs / 1000) + 'с/' + (REWARD_AD_TIMEOUT_MS / 1000) + 'с');
+        }
+      }, 10000);
+      withTimeout(vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'reward', useWaterfall: true }), REWARD_AD_TIMEOUT_MS)
+        .then(function (res) {
+          clearInterval(_waitTick);
+          _rewardedInFlight = false;
+          restoreBannerAfterRewarded(bannerWasHidden);
+          var rewarded = res.result === true;
+          if (window.debugLog) window.debugLog('showRewarded: мост ОТВЕТИЛ, result=' + res.result, { big: true });
+          if (rewarded && onReward) onReward();
+          // Выдача обязана пережить немедленное закрытие/перезагрузку сразу
+          // после ролика (ТЗ №12, доклад основателя: «выдача сохранена» была
+          // ложью — saveProgress() внутри onReward() лишь ставит запись в
+          // обычную 10с-очередь дебаунса адаптера; без форс-флаша здесь она
+          // терялась при быстром уходе со страницы).
+          if (rewarded) vkFlushNow();
+          if (onClose) onClose(rewarded);
+        })
+        .catch(function (e) {
+          clearInterval(_waitTick);
+          _rewardedInFlight = false;
+          restoreBannerAfterRewarded(bannerWasHidden);
+          // Тот же .catch() ловит и штатный сбой моста, и таймаут-предохранитель
+          // (withTimeout реджектит по истечении REWARD_AD_TIMEOUT_MS) — оба
+          // исхода по студийному стандарту выдают награду бесплатно.
+          //
+          // 2026-09-06 (расследование): различаем ДВА разных исхода в самом
+          // тексте лога — раньше оба выглядели одинаково "недоступен/таймаут",
+          // хотя это РАЗНЫЕ ситуации на стороне площадки:
+          //   - e.message === 'timeout' (наш withTimeout) -> нативная сторона
+          //     ВООБЩЕ не ответила за 40с — ни успехом, ни error_type. Живая
+          //     проверка (tools/investigate_vk_android_bridge.js, реальный
+          //     vk-bridge.min.js через мок window.AndroidBridge) подтвердила:
+          //     это не наш баг тайминга — жест не протухает, вызов уходит
+          //     синхронно, <10мс после клика.
+          //   - иначе -> площадка ЯВНО ответила ошибкой (объект с error_type
+          //     от самого моста) — сюда попадает и обычный сетевой сбой.
+          // Если баг воспроизводится на реальном устройстве — эта строка в
+          // консоли прямо говорит, какой из двух случаев произошёл, не
+          // требует читать код.
+          var isSilentTimeout = e instanceof Error && e.message === 'timeout';
+          var verdict = isSilentTimeout
+            ? 'НЕ ОТВЕТИЛА за ' + REWARD_AD_TIMEOUT_MS + 'мс (ни успех, ни ошибка)'
+            : 'явно отказала: ' + (function () { try { return JSON.stringify(e); } catch (je) { return String(e); } })();
+          console.warn('[Platform] showRewarded (vk): площадка ' + verdict + ', выдаём бесплатно:', e);
+          if (window.debugLog) window.debugLog('showRewarded: ИТОГ — площадка ' + verdict + ' -> выдаём бесплатно', { big: true });
+          if (onReward) onReward();
+          vkFlushNow();
+          if (onClose) onClose(true);
+        });
+    });
   }
 
   // Покупки за голоса (ЗАДАЧА N, п. «покупки — не делать в этой задаче»):
