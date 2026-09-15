@@ -6,7 +6,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <title>Кот и японские кроссворды</title>
-  <link rel="stylesheet" href="style.css?v=51" />
+  <link rel="stylesheet" href="style.css?v=55" />
 
   <!-- VK Bridge (@vkontakte/vk-bridge 3.0.2) — вшит локально, без CDN. -->
   <script src="vk-bridge.min.js"></script>
@@ -31,11 +31,12 @@
       <nav class="menu-actions">
         <button id="btn-continue" class="btn btn-secondary" hidden data-i18n="continue">Продолжить</button>
         <button id="btn-play"     class="btn btn-primary"          data-i18n="play">Играть</button>
-        <button id="btn-daily"    class="btn btn-secondary" hidden data-i18n="daily">Ежедневный</button>
+        <button id="btn-daily"    class="btn btn-secondary"        data-i18n="daily">Ежедневный</button>
         <button id="btn-shop"     class="btn btn-secondary"        data-i18n="shop">Магазин</button>
       </nav>
-      <p id="retention-streak-line" class="retention-line"></p>
-      <div class="daily-meta" hidden style="display:none">
+      <p id="retention-streak-line" class="retention-line" hidden></p>
+      <p id="series-line" class="retention-line"></p>
+      <div class="daily-meta">
         <p id="daily-streak" class="daily-streak" hidden></p>
         <button id="btn-calendar" class="icon-btn cal-icon-btn" aria-label="Календарь">▦</button>
       </div>
@@ -53,14 +54,13 @@
       </div>
     </section>
 
-    <!-- Экран выбора сложности -->
-    <section id="category" class="screen">
-      <button id="btn-back-cat" class="icon-btn cat-back-btn" aria-label="Назад">‹</button>
-      <h2 class="cat-screen-title" data-i18n="chooseLevel">Выберите сложность</h2>
-      <p id="category-total" class="cat-total"></p>
+    <!-- Экран глав («Альбом», ТЗ №50) -->
+    <section id="chapters" class="screen">
+      <button id="btn-back-chapters" class="icon-btn cat-back-btn" aria-label="Назад">‹</button>
+      <h2 class="cat-screen-title" data-i18n="albumTitle">Альбом</h2>
       <p id="retention-drip-line" class="retention-line"></p>
       <button id="retention-rewarded-btn" class="btn btn-secondary retention-rewarded-btn" hidden></button>
-      <div id="category-list" class="category-list"></div>
+      <div id="chapter-list" class="chapter-list"></div>
     </section>
 
     <!-- Экран косметики (Задача E — каркас, Задача I — несколько гамм) -->
@@ -86,6 +86,12 @@
         <button class="mode-btn is-active" data-mode="1" data-i18n="modeFill">■ Закрасить</button>
         <button class="mode-btn"           data-mode="2" data-i18n="modeCross">✕ Крестик</button>
         <button id="btn-hint" class="hint-btn"><span class="hint-icon-wrap" aria-hidden="true"><svg class="ad-icon" viewBox="0 0 16 16" width="15" height="15" focusable="false"><rect x="0.5" y="2.5" width="15" height="11" rx="2.5"/><path d="M6.4 5.6v4.8l4.6-2.4z"/></svg><span id="hint-badge" class="hint-badge" hidden></span></span><span class="hint-label"><span data-i18n="hint">Подсказка</span><span id="hint-ad-caption" class="hint-ad-caption" data-i18n="hintAdCaption">за рекламу</span></span></button>
+        <!-- ТЗ №51: кнопка «Проверить» — тот же визуальный каркас, что у
+             #btn-hint (.hint-btn/.hint-icon-wrap/.hint-label/.hint-ad-caption),
+             только значок рекламы (#check-ad-icon) появляется ТОЛЬКО в
+             режиме «за рекламу» (main.js::updateCheckButton), в остальных
+             режимах виден статичный «✓» (#check-icon-mark). -->
+        <button id="btn-check" class="hint-btn"><span class="hint-icon-wrap" aria-hidden="true"><span id="check-icon-mark" class="check-icon-mark">✓</span><svg id="check-ad-icon" class="ad-icon" viewBox="0 0 16 16" width="15" height="15" focusable="false" hidden><rect x="0.5" y="2.5" width="15" height="11" rx="2.5"/><path d="M6.4 5.6v4.8l4.6-2.4z"/></svg></span><span class="hint-label"><span data-i18n="check">Проверить</span><span id="check-caption" class="hint-ad-caption is-visible" data-i18n="checkFree">бесплатно</span></span></button>
       </div>
 
       <!-- Победный оверлей -->
@@ -96,7 +102,21 @@
             <canvas id="win-canvas" class="win-canvas"></canvas>
           </div>
           <p id="win-theme-label" class="win-theme"></p>
+          <!-- ТЗ №50: «Картинка {k} из 10 · глава «{name}»» — main.js::onWin. -->
+          <p id="win-chapter-line" class="win-chapter-line" hidden></p>
           <button id="btn-next-level" class="btn btn-primary" data-i18n="next">Дальше</button>
+          <!-- ТЗ №51: шеринг в историю ВК — только на ВК-сборке, только когда
+               Platform.canShareStory() (main.js: showGame/showDailyGame через
+               onWin/onDailyWin). На Яндексе canShareStory() всегда false —
+               кнопка остаётся hidden, а не задизейблена. -->
+          <button id="btn-share" class="btn btn-secondary" hidden data-i18n="share">Поделиться</button>
+
+          <!-- ТЗ №49: тизер завтрашней картинки дня — заполняется main.js
+               (renderWinTomorrow) только если DAILY_LEVELS подключён. -->
+          <div id="win-tomorrow" class="win-tomorrow" hidden>
+            <canvas id="win-tomorrow-canvas" class="win-tomorrow-canvas"></canvas>
+            <p class="win-tomorrow-label" data-i18n="winTomorrow"></p>
+          </div>
         </div>
       </div>
 
@@ -122,6 +142,38 @@
         <p class="onboarding-text" data-i18n="howToLine1">Числа — длины закрашенных серий слева направо и сверху вниз.</p>
         <p class="onboarding-text" data-i18n="howToLine2">Между сериями — хотя бы одна пустая клетка.</p>
         <button id="btn-onboarding-ok" class="btn btn-primary" data-i18n="howToOk">Понятно!</button>
+      </div>
+    </div>
+
+    <!-- ТЗ №49: карточка лестницы 7 дней — по образцу #onboarding-overlay.
+         Показывается один раз в день на первом showMenu() после загрузки,
+         пока не забрана награда (main.js: maybeShowLadderCard/
+         showLadderCard/claimLadderReward). Нет кнопки «Позже» — только
+         «Забрать» закрывает карточку (см. п.2.3 ТЗ №49). -->
+    <div id="ladder-card" class="overlay" hidden>
+      <div class="onboarding-card ladder-card-inner">
+        <h2 id="ladder-card-title" class="onboarding-title"></h2>
+        <p id="ladder-card-day" class="ladder-card-day"></p>
+        <div id="ladder-card-strip" class="ladder-strip" aria-hidden="true"></div>
+        <p id="ladder-card-today" class="onboarding-text"></p>
+        <p id="ladder-card-tomorrow" class="onboarding-text"></p>
+        <button id="btn-ladder-claim" class="btn btn-primary" data-i18n="ladderClaim">Забрать</button>
+      </div>
+    </div>
+
+    <!-- ТЗ №50: награда за главу — открытка + подсказки, поверх экрана
+         победы (после конфетти). Живёт вне .screen (как #ladder-card), в
+         DOM ПОСЛЕ #game — при одинаковом z-index .overlay это ставит её
+         поверх #win-overlay. main.js: onWin() показывает/прячет явно
+         (hidden), showGame()/showDailyGame() прячут её на входе в уровень. -->
+    <div id="chapter-done-overlay" class="overlay" hidden>
+      <div class="onboarding-card chapter-done-card">
+        <h2 id="chapter-done-title" class="onboarding-title"></h2>
+        <div class="silhouette-mount">
+          <canvas id="chapter-done-canvas" class="win-canvas"></canvas>
+        </div>
+        <p id="chapter-done-reward" class="chapter-done-reward"></p>
+        <button id="btn-chapter-done-next" class="btn btn-primary" data-i18n="next">Дальше</button>
       </div>
     </div>
 
@@ -173,14 +225,18 @@
 
   </div>
 
-<script src="i18n.js?v=51"></script>
-  <script src="platform.js?v=51"></script>
-  <script src="save.js?v=51"></script>
-  <script src="sound.js?v=51"></script>
-  <script src="levels.js?v=51"></script>
-  <script src="nonogram.js?v=51"></script>
-  <script src="build.js?v=51"></script>
-  <script src="retention.js?v=51"></script>
-  <script src="main.js?v=51"></script>
+<script src="i18n.js?v=55"></script>
+  <script src="platform.js?v=55"></script>
+  <script src="save.js?v=55"></script>
+  <script src="sound.js?v=55"></script>
+  <script src="levels.js?v=55"></script>
+  <script src="chapters.js?v=55"></script>
+  <script src="chapters_map.js?v=55"></script>
+  <script src="daily_levels.js?v=55"></script>
+  <script src="nonogram.js?v=55"></script>
+  <script src="build.js?v=55"></script>
+  <script src="retention.js?v=55"></script>
+  <script src="ladder.js?v=55"></script>
+  <script src="main.js?v=55"></script>
 </body>
 </html>

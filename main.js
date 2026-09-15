@@ -99,27 +99,6 @@ document.addEventListener('DOMContentLoaded', function () {
   var buildTagEl = document.getElementById('build-tag');
   if (buildTagEl && window.BUILD_VERSION) buildTagEl.textContent = window.BUILD_VERSION;
 
-  /* ---- Категории сложности ---- */
-
-  var CATEGORIES = [
-    { key: 'catTutorial', indices: [0, 1, 2] },                              // 5×5
-    { key: 'catEasy',     indices: [3, 4, 5, 6, 7, 8, 9, 10] },              // 5×5 + 6×6
-    { key: 'catMedium',   indices: [11, 12, 13, 14, 17, 18, 19] },           // 7×7 + 10×10
-    { key: 'catHard',     indices: [15, 16, 20, 21, 22, 23, 24, 25, 26,     // 8×8 + 12×12 + 15×15
-                                     27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37] }, // долив п.2.9: 13×13 + 14×14 + 15×15
-    // Задача K: перенесённые из daily-пула 92 уровня (10×10/12×12),
-    // отдельной категорией — не смешиваем с catHard, чтобы не «занижать»
-    // сложность после 15×15 в конце старой кампании. Индексы 38-129
-    // (id 39-130 в levels.js), отсортированы по возрастанию площади/плотности.
-    { key: 'catLibrary',  indices: _range(38, 129) },
-  ];
-
-  function _range(from, to) {
-    var arr = [];
-    for (var i = from; i <= to; i++) arr.push(i);
-    return arr;
-  }
-
   /* ---- Состояние ---- */
 
   var _completedLevels = {};  // { "0": true, "3": true, … }
@@ -142,10 +121,45 @@ document.addEventListener('DOMContentLoaded', function () {
   // ТЗ №01: модуль удержания. maxReachedIndex/bonusHints/retention — см.
   // save.js emptySave() (там же смысл каждого поля). retentionState —
   // распакованный (decodeState) вид retention для рантайма; сериализуется
-  // обратно в payload только в saveProgress().
-  var _maxReachedIndex = -1;
+  // обратно в payload только в saveProgress(). ТЗ №50: замок теперь по
+  // ПОЗИЦИЯМ (chapters_map.js) — _maxReachedPos — самая дальняя ПОЗИЦИЯ
+  // (не индекс LEVELS), сериализуется в то же поле сейва maxReachedIndex
+  // (имя не менялось, см. save.js).
+  var _maxReachedPos = -1;
   var _bonusHints      = 0;
   var _retentionState  = null;
+  // ТЗ №50: главы, за которые уже выдана награда (открытка + подсказки) —
+  // { ch01: true, … }, см. save.js emptySave()/migrate().
+  var _postcards       = {};
+
+  // ТЗ №49: лестница 7 дней (ladder.js). _ladderState — поля как в сейве
+  // (save.js emptySave: ladderDay/ladderLastDay/ladderSeries/
+  // ladderClaimedDay), не сериализуется отдельно — плоские поля пишутся
+  // прямо в payload (saveProgress). _ladderPending — НЕ персистится: флаг
+  // «сегодняшний день лестницы открылся в ЭТОЙ сессии» на время до первого
+  // showMenu(); сохранённого состояния (ladderLastDay) достаточно, чтобы
+  // Ladder.isClaimed()/Ladder.advance() сами разобрались при следующей
+  // загрузке, даже если игрок закрыл вкладку, не забрав награду.
+  var _ladderState  = { day: 0, lastDay: '', series: 0, claimedDay: '' };
+  var _ladderPending = false;
+  // ТЗ №49, п.5: { fav, rec, shortcut, review } — какие крючки площадки
+  // уже показаны этому игроку, каждый не больше одного раза.
+  var _hooksShown = {};
+
+  // ТЗ №49, п.5: тайминг текущего пазла для track('puzzle_done', {sec,hints}) —
+  // сброс в showGame()/showDailyGame(), считывается в onWin()/onDailyWin().
+  var _levelStartedAt     = 0;
+  var _hintsUsedThisLevel = 0;
+
+  // ТЗ №51: кнопка «Проверить» + мягкие тосты. Всё в памяти сессии,
+  // НЕ в сейве — бесплатная проверка/тосты «сгорают» при перезагрузке
+  // страницы, это осознанно (постановка: «в памяти сессии, не в сейве»).
+  var _freeCheckUsed  = {}; // { key: true } — бесплатная проверка уже потрачена на эту картинку
+  var _nudgeShownFor  = {}; // { key: true } — тост «лишняя клетка» уже показан на этой картинке
+  var _nearWinShownFor = {}; // { key: true } — тост «почти собрал» уже показан на этой картинке
+  var _errorSince = 0;    // мс (Date.now()) — с какого момента hasErrors() непрерывно true, 0 = сейчас нет ошибок
+  var _lastMoveAt = 0;    // мс (Date.now()) — время последнего хода на текущей картинке
+  var _nudgeTimer = null; // setInterval, живёт только пока открыт экран игры
 
   // Конфиг модуля (ТЗ №01, п.2.6) — колбэки замыкают состояние ИГРЫ,
   // сам retention.js про LEVELS/COSMETICS ничего не знает. typeof-проверка
@@ -155,6 +169,20 @@ document.addEventListener('DOMContentLoaded', function () {
   // напрямую, без build.py).
   var RETENTION_TICK_MS = 6 * 60 * 60 * 1000; // такт раздатчика (боевой, 6ч)
 
+  // ТЗ №51: пороги мягких тостов-подсказок (§3) — 60с непрерывной ошибки
+  // и 10с простоя после последнего хода для «Кажется, где-то лишняя
+  // клетка».
+  var NUDGE_ERROR_MS = 60000;
+  var NUDGE_IDLE_MS  = 10000;
+
+  // ТЗ №49а: текст «+N подсказки» шёл фикс. словом мн.ч. — при n=1 читалось
+  // «+1 подсказки». Общая функция для обоих мест (grantHints-тост и
+  // тост/карточка лестницы), чтобы склонение не дублировалось.
+  function retentionRewardHintsText(n) {
+    var word = I18N.pluralRu(n, [I18N.t('rewardHintsOne'), I18N.t('rewardHintsFew'), I18N.t('rewardHintsMany')]);
+    return I18N.t('retentionRewardHints').replace('{n}', n).replace('{word}', word);
+  }
+
   var RETENTION_CONFIG = (typeof Retention !== 'undefined') ? Retention.mergeConfig({
     tickMs: RETENTION_TICK_MS,
     // ТЗ №08: «1 пазл в 6 часов» ощущался как дефицит, не пейсинг. Порция
@@ -163,14 +191,26 @@ document.addEventListener('DOMContentLoaded', function () {
     dripPerTick: 6,
     accumulatorCap: 24,
     hintsRewardCount: 2, // п.2.3: «2-й день — подсказки (число задаётся конфигом)»
+    // ТЗ №49, §2.3: лестница 7 дней (ladder.js) заменяет наградную часть
+    // серии входов — retention.js по-прежнему СЧИТАЕТ streakLen/streakRewards
+    // (Retention.onEnter вызывается как раньше, состояние сейва не ломаем),
+    // но сам больше ничего не выдаёт: пустой streakDayReward — ни один
+    // rewardKind не найдётся в onEnter(), reward всегда null.
+    streakDayReward: {},
     callbacks: {
       totalLevels:     function ()  { return LEVELS.length; },
-      isCompleted:     function (i) { return !!_completedLevels[i]; },
-      maxReachedIndex: function ()  { return _maxReachedIndex; },
+      // ТЗ №50: замок работает по ПОЗИЦИЯМ — весь модуль retention.js
+      // (isLevelOpen/dripBoundary/…) получает и сравнивает позиции, не
+      // индексы LEVELS; retention.js сам об этом не знает (числа для него
+      // непрозрачны), поэтому здесь, на границе, позиция переводится в
+      // индекс LEVELS, которым адресован _completedLevels.
+      isCompleted:     function (pos) { return !!_completedLevels[ChaptersMap.posToIndex(pos)]; },
+      maxReachedIndex: function ()  { return _maxReachedPos; },
       grantHints: function (n) {
         _bonusHints += n;
         updateHintBadge();
-        showRetentionToast(I18N.t('retentionRewardHints').replace('{n}', n));
+        updateCheckButton();
+        showRetentionToast(retentionRewardHintsText(n));
       },
       grantStyle: function (id) {
         if (!_cosmeticsOwned[id]) _cosmeticsOwned[id] = true;
@@ -198,6 +238,11 @@ document.addEventListener('DOMContentLoaded', function () {
     // кнопку «Купить» для того, что купить нельзя.
     { id: 'cosmetic_streak_rust', themeClass: 'theme-streak-rust', nameKey: 'cosmeticStreakRustName',
       free: false, streakReward: true, swatchBg: '#f3ead6', swatchInk: '#7a3b2e' },
+    // ТЗ №49: награда за 7-й день лестницы — первая ТЁМНАЯ гамма студии.
+    // streakReward:true — та же семантика, что и у cosmetic_streak_rust
+    // (buildShopItemRow не рисует «Купить», выдаётся только Ladder-карточкой).
+    { id: 'cosmetic_night', themeClass: 'theme-night', nameKey: 'cosmeticNightName',
+      free: false, streakReward: true, swatchBg: '#1c1f26', swatchInk: '#e8e6df' },
   ];
   var COSMETIC_UNLOCK_LEVELS  = 3; // разблокировка МАГАЗИНА после N пройденных уровней
   // Байтовый лимит сейва — площадка-специфичный (Platform.SAVE_SIZE_GUARD_
@@ -237,6 +282,7 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 
   document.getElementById('btn-hint').addEventListener('click', onHintClick);
+  document.getElementById('btn-check').addEventListener('click', onCheckClick);
 
   // Очистка поля — свободный режим, ошибки не подсвечиваются, игрок может
   // запутаться. Бесплатно, без рекламы (это не бонус — п.4.5.2: rewarded
@@ -285,14 +331,24 @@ document.addEventListener('DOMContentLoaded', function () {
       _activeCosmetic  = migrated.activeCosmetic;
       applyCosmetic(_activeCosmetic);
 
-      _maxReachedIndex = migrated.maxReachedIndex;
+      _ladderState = {
+        day:        migrated.ladderDay,
+        lastDay:    migrated.ladderLastDay,
+        series:     migrated.ladderSeries,
+        claimedDay: migrated.ladderClaimedDay,
+      };
+      _hooksShown = migrated.hooksShown;
+
+      _maxReachedPos = migrated.maxReachedIndex;
+      _postcards       = migrated.postcards;
       _bonusHints      = migrated.bonusHints;
       updateHintBadge(); // возвращающийся игрок мог накопить баланс ДО этой сессии
+      updateCheckButton();
       if (typeof Retention !== 'undefined') {
         var _nowRet = Platform.now().getTime();
         _retentionState = Retention.isValidEncoded(migrated.retention)
           ? Retention.decodeState(migrated.retention)
-          : Retention.initState(_maxReachedIndex, _nowRet, RETENTION_CONFIG);
+          : Retention.initState(_maxReachedPos, _nowRet, RETENTION_CONFIG);
         // Раздатчик мог накопить такты, пока игра не запускалась.
         _retentionState = Retention.applyDripTick(_retentionState, _nowRet, RETENTION_CONFIG);
         // День засчитывается фактом входа (п.2.3), не прохождением уровня —
@@ -301,6 +357,39 @@ document.addEventListener('DOMContentLoaded', function () {
         _retentionState = _entryResult.state;
         if (_entryResult.reward === 'hints') RETENTION_CONFIG.callbacks.grantHints(RETENTION_CONFIG.hintsRewardCount);
         else if (_entryResult.reward === 'style') RETENTION_CONFIG.callbacks.grantStyle('cosmetic_streak_rust');
+        // (streakDayReward:{} выше — _entryResult.reward всегда null сейчас;
+        // ветки оставлены на случай будущего отката/A-B, поведение самого
+        // retention.js не тронуто.)
+      }
+
+      if (typeof Ladder !== 'undefined') {
+        // ТЗ №49, п.2.2: одноразовая миграция игрока старой серии входов
+        // (retention.js) на лестницу — без неё вернувшийся живой игрок ВК
+        // стартовал бы с ladderDay=0, теряя уже накопленную серию входов.
+        // Retention.isValidEncoded(migrated.retention) — ключевой гейт:
+        // отличает СУЩЕСТВУЮЩЕГО игрока (у него уже был сохранён блок
+        // retention ДО этого ТЗ) от настоящего новичка. Без этого гейта
+        // брать только «streakLen>=1 сегодня» было бы ловушкой: у
+        // совершенно нового игрока onEnter() тоже сразу даёт streakLen=1 в
+        // первый же день — migration-ветка сработала бы и для него,
+        // выставив ladderLastDay=today ДО первого Ladder.advance(), и тот
+        // увидел бы «уже открыто сегодня» на своём самом первом входе
+        // (opened:false, карточка лестницы никогда бы не показалась).
+        if (_ladderState.lastDay === '' && Retention.isValidEncoded(migrated.retention) &&
+            _retentionState && _retentionState.lastEntryDay === _todayKey() && _retentionState.streakLen >= 1) {
+          _ladderState.day    = Math.min(_retentionState.streakLen, 7);
+          _ladderState.series = _retentionState.streakLen;
+          _ladderState.lastDay = _todayKey();
+          // Модуль уже выдал награду дня 2/3 СЕГОДНЯ (streakRewards[N] —
+          // флаг конкретно текущего streakLen) — отмечаем день лестницы
+          // забранным, чтобы не выдать ту же награду дважды в день апдейта.
+          if (_retentionState.streakRewards[_retentionState.streakLen]) {
+            _ladderState.claimedDay = _todayKey();
+          }
+        }
+        var _ladderAdvance = Ladder.advance(_ladderState, _todayKey());
+        _ladderState = _ladderAdvance.state;
+        if (_ladderAdvance.opened) _ladderPending = true;
       }
 
       // Восстанавливаем только дни текущего локального месяца
@@ -355,10 +444,18 @@ document.addEventListener('DOMContentLoaded', function () {
       dailyBoardDate:  _dailyBoardDate,
       cosmeticsOwned:  _cosmeticsOwned,
       activeCosmetic:  _activeCosmetic,
-      maxReachedIndex: _maxReachedIndex,
+      maxReachedIndex: _maxReachedPos,
+      posLock:         true, // ТЗ №50: с этой сборки maxReachedIndex — всегда позиция
+      postcards:       _postcards,
       bonusHints:      _bonusHints,
       retention:       (typeof Retention !== 'undefined' && _retentionState)
                           ? Retention.encodeState(_retentionState) : null,
+      // ТЗ №49: поля лестницы — плоские, без encode/decode (см. ladder.js).
+      ladderDay:        _ladderState.day,
+      ladderLastDay:    _ladderState.lastDay,
+      ladderSeries:     _ladderState.series,
+      ladderClaimedDay: _ladderState.claimedDay,
+      hooksShown:       _hooksShown,
     };
     // Сторож байтов (ЖЁСТКОЕ ОГРАНИЧЕНИЕ задания): при риске переполнения
     // площадка-специфичного лимита (Platform.SAVE_SIZE_GUARD_BYTES) вытесняет
@@ -388,6 +485,21 @@ document.addEventListener('DOMContentLoaded', function () {
       el.classList.remove('is-visible');
       setTimeout(function () { el.hidden = true; }, 260); // дождаться transition
     }, 3200);
+  }
+
+  // ТЗ №51а: тост «почти собрал» (1-3 клетки) живёт 3.2с, а последние
+  // клетки игрок обычно ставит за 1-3с — тост доживает до открытия
+  // #win-overlay. Вызывается ДО показа оверлея победы (main.js::onWin и
+  // showDailyWinOverlay), убирает тост сразу, без transition — оверлей
+  // победы и так перекрывает экран. Тосты, которые показывает уже сам
+  // оверлей победы (лестница, «+3 подсказки», «Опубликовано»), идут
+  // ПОСЛЕ этого вызова через showRetentionToast как обычно.
+  function hideRetentionToast() {
+    var el = document.getElementById(RETENTION_CONFIG.domSlots.rewardToast);
+    if (!el) return;
+    if (_retentionToastTimer) { clearTimeout(_retentionToastTimer); _retentionToastTimer = null; }
+    el.classList.remove('is-visible');
+    el.hidden = true;
   }
 
   // RV-загрузка (2026-09-06, баг-репорт основателя): Platform.showRewarded
@@ -434,7 +546,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // Продвигает раздатчик на текущий момент; при реальной выдаче — сохраняет
   // и показывает отклик (п.2.4: тихих улучшений не бывает). Дёшево вызывать
-  // часто (showMenu/showCategory) — если тактов не набежало, no-op.
+  // часто (showMenu/showChapters) — если тактов не набежало, no-op.
   function retentionTick() {
     if (typeof Retention === 'undefined' || !_retentionState) return;
     var before = _retentionState.dripOpened;
@@ -558,6 +670,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // саму кнопку (см. комментарий у showAdLoadingOverlay()).
     showAdLoadingOverlay();
     lockRewardedGate();
+    if (Platform.gameplayStop) Platform.gameplayStop(); // ТЗ №49, п.5: перед rewarded
     Platform.showRewarded(function onReward() {
       var before = _retentionState.dripOpened;
       _retentionState = Retention.grantDrip(_retentionState, RETENTION_CONFIG, RETENTION_CONFIG.dripPerTick);
@@ -576,13 +689,156 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
-  // Строка серии (главный экран) — п.2.3, видна ПОСТОЯННО (не hidden).
+  // ТЗ №49: #retention-streak-line больше не показывается (заменена
+  // #series-line, см. renderSeriesLine ниже) — элемент остаётся в DOM
+  // (index.html: build.py insert_retention_dom), main.js его только прячет.
+  // Функция-заглушка оставлена (не удалена) — на случай отката/A-B теста
+  // формулировки, тем же способом, что и streakDayReward:{} выше.
   function renderRetentionStreakLine() {
-    if (!_retentionState) return;
     var el = document.getElementById(RETENTION_CONFIG.domSlots.streakLine);
+    if (el) el.hidden = true;
+  }
+
+  // ТЗ №49, §2.3: «Серия: {n} дн. · день {d} из 7» на месте старой строки
+  // серии входов. day=0 (лестница ещё ни разу не открывалась — самый
+  // первый показ меню до первого onEnter) — строка скрыта, показывать
+  // «день 0 из 7» игроку нечего.
+  function renderSeriesLine() {
+    var el = document.getElementById('series-line');
     if (!el) return;
-    var shown = Math.min(_retentionState.streakLen, RETENTION_CONFIG.streakThreshold);
-    el.textContent = I18N.t('retentionStreakLine').replace('{n}', shown);
+    if (!_ladderState || _ladderState.day <= 0) { el.hidden = true; return; }
+    el.hidden = false;
+    el.textContent = I18N.t('seriesLine')
+      .replace('{n}', _ladderState.series)
+      .replace('{d}', _ladderState.day);
+  }
+
+  /* ---- ТЗ №49: лестница 7 дней (карточка #ladder-card) ----
+     ladder.js сам ничего не знает про DOM/Platform/COSMETICS (см. заголовок
+     файла) — весь мост, как и у retention.js, здесь. */
+
+  function trackEvent(name, params) {
+    if (Platform.track) Platform.track(name, params);
+  }
+
+  // 💡 подсказки / 🎨 стиль / 🎁 пазлы (п.2.3). Приоритет иконки при
+  // комбинированной награде (день 7: стиль ЕЩЁ не куплен И пазлы разом) —
+  // стиль заметнее пазлов, пазлы заметнее подсказок.
+  function ladderRewardIcon(reward) {
+    if (reward.style) return '🎨';
+    if (reward.drip > 0) return '🎁';
+    return '💡';
+  }
+
+  // Текст «Сегодня: {r}»/«Завтра: {r}» — день 7 может нести СРАЗУ стиль
+  // (если не куплен) И пазлы (см. ladder.js LADDER[6]); ТЗ не описывает
+  // отдельную комбинированную формулировку — склеиваем части через " + ",
+  // не теряя ни одной награды дня в тексте карточки.
+  function ladderRewardText(reward) {
+    var parts = [];
+    if (reward.style) {
+      parts.push(I18N.t(reward.style === 'cosmetic_night' ? 'rewardStyleNight' : 'rewardStyleRust'));
+    }
+    if (reward.hints > 0) {
+      var word = I18N.pluralRu(reward.hints, [I18N.t('rewardHintsOne'), I18N.t('rewardHintsFew'), I18N.t('rewardHintsMany')]);
+      parts.push('+' + reward.hints + ' ' + word);
+    }
+    if (reward.drip > 0) {
+      parts.push(I18N.t('rewardDrip').replace('{n}', reward.drip));
+    }
+    return parts.join(' + ');
+  }
+
+  // Тост при «Забрать» — переиспользует существующие ключи
+  // retentionRewardHints/retentionRewardStyle + новый retentionRewardDripN
+  // (ТЗ №49, п.2.3). Приоритет при комбинированной награде дня 7: стиль >
+  // пазлы > подсказки — тот же порядок, что и у значка (ladderRewardIcon).
+  function ladderToastText(reward) {
+    if (reward.style) return I18N.t('retentionRewardStyle');
+    if (reward.drip > 0) {
+      var dripWord = I18N.pluralRu(reward.drip, [I18N.t('puzzleWordOne'), I18N.t('puzzleWordFew'), I18N.t('puzzleWordMany')]);
+      return I18N.t('retentionRewardDripN').replace('{n}', reward.drip).replace('{word}', dripWord);
+    }
+    if (reward.hints > 0) return retentionRewardHintsText(reward.hints);
+    return '';
+  }
+
+  function renderLadderStrip(day) {
+    var strip = document.getElementById('ladder-card-strip');
+    if (!strip) return;
+    strip.innerHTML = '';
+    for (var i = 1; i <= 7; i++) {
+      var reward = Ladder.rewardFor(i, _cosmeticsOwned);
+      var cell = document.createElement('div');
+      cell.className = 'ladder-cell' + (i < day ? ' is-done' : (i === day ? ' is-current' : ''));
+      var num = document.createElement('span');
+      num.className = 'ladder-cell-num';
+      num.textContent = String(i);
+      var icon = document.createElement('span');
+      icon.className = 'ladder-cell-icon';
+      icon.textContent = ladderRewardIcon(reward);
+      cell.appendChild(num);
+      cell.appendChild(icon);
+      strip.appendChild(cell);
+    }
+  }
+
+  function showLadderCard() {
+    var day = _ladderState.day;
+    var tomorrowDay = (day >= 7) ? 4 : day + 1; // тот же приём по кругу, что Ladder.advance
+    var todayReward    = Ladder.rewardFor(day, _cosmeticsOwned);
+    var tomorrowReward = Ladder.rewardFor(tomorrowDay, _cosmeticsOwned);
+
+    document.getElementById('ladder-card-title').textContent =
+      I18N.t('ladderTitle').replace('{n}', _ladderState.series);
+    document.getElementById('ladder-card-day').textContent =
+      I18N.t('ladderDay').replace('{d}', day);
+    renderLadderStrip(day);
+    document.getElementById('ladder-card-today').textContent =
+      I18N.t('ladderToday').replace('{r}', ladderRewardText(todayReward));
+    document.getElementById('ladder-card-tomorrow').textContent =
+      I18N.t('ladderTomorrow').replace('{r}', ladderRewardText(tomorrowReward));
+
+    document.getElementById('btn-ladder-claim').onclick = function () {
+      claimLadderReward(todayReward);
+    };
+
+    document.getElementById('ladder-card').hidden = false;
+    trackEvent('card_shown', { day: day });
+  }
+
+  function claimLadderReward(reward) {
+    if (reward.hints > 0) {
+      _bonusHints += reward.hints;
+      updateHintBadge();
+      updateCheckButton();
+    }
+    if (reward.style && !_cosmeticsOwned[reward.style]) {
+      _cosmeticsOwned[reward.style] = true;
+    }
+    if (reward.drip > 0 && typeof Retention !== 'undefined' && _retentionState) {
+      _retentionState = Retention.grantDrip(_retentionState, RETENTION_CONFIG, reward.drip);
+    }
+    var toastText = ladderToastText(reward);
+    if (toastText) showRetentionToast(toastText);
+
+    _ladderState.claimedDay = _todayKey();
+    _ladderPending = false;
+    saveProgress();
+
+    document.getElementById('ladder-card').hidden = true;
+    trackEvent('card_claimed', { day: _ladderState.day });
+  }
+
+  // Вызывается в showMenu() при каждом показе меню (не только «первый раз
+  // после загрузки» буквально — карточка без кнопки «Позже», п.2.3, поэтому
+  // естественно переоткрывается, пока не забрана; Ladder.isClaimed делает
+  // это идемпотентным — за один день покажется, только пока не нажали
+  // «Забрать»).
+  function maybeShowLadderCard() {
+    if (typeof Ladder === 'undefined' || !_ladderPending) return;
+    if (Ladder.isClaimed(_ladderState, _todayKey())) { _ladderPending = false; return; }
+    showLadderCard();
   }
 
   // ТЗ №03, Фаза 1: видимый баланс бонусных подсказок (находка ТЗ №02 —
@@ -639,9 +895,19 @@ document.addEventListener('DOMContentLoaded', function () {
   // времени. Мы сознательно НЕ защищаемся от этого (потребовало бы
   // доверенного серверного времени) — при масштабе и жанре игры это не
   // считается бизнес-риском, а не недосмотром.
-  function _todayKey() {
-    var d = Platform.now();
+  function _dayKeyFromDate(d) {
     return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+  }
+
+  function _todayKey() {
+    return _dayKeyFromDate(Platform.now());
+  }
+
+  // ТЗ №49, §3: локальная «завтра» — тот же способ, что и «сегодня»
+  // (Platform.now(), не UTC), просто +1 календарный день.
+  function _tomorrowDate() {
+    var now = Platform.now();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
   }
 
   // Задача K: пул daily сужен до первых DAILY_POOL_SIZE записей (30-92
@@ -655,8 +921,12 @@ document.addEventListener('DOMContentLoaded', function () {
   var DAILY_POOL_SIZE    = 30;
   var DAILY_POOL_CUTOVER = '2026-7-25';
 
-  function _dailyIndex() {
-    var days        = Math.round((_dayAnchor(_todayKey())        - _dayAnchor('2024-1-1')) / 86400000);
+  // ТЗ №49, §3: необязательный параметр date (по умолчанию — Platform.now())
+  // для тизера завтрашнего пазла (renderWinTomorrow) — логика не меняется,
+  // просто считаем от переданной даты вместо всегда «сегодня».
+  function _dailyIndex(date) {
+    var dayKey      = _dayKeyFromDate(date || Platform.now());
+    var days        = Math.round((_dayAnchor(dayKey)              - _dayAnchor('2024-1-1')) / 86400000);
     var cutoverDays = Math.round((_dayAnchor(DAILY_POOL_CUTOVER) - _dayAnchor('2024-1-1')) / 86400000);
 
     if (days <= cutoverDays) {
@@ -751,6 +1021,7 @@ document.addEventListener('DOMContentLoaded', function () {
     _lastInterstitialAt      = Date.now();
     Sound.suspend();
     Nonogram.setPaused(true);
+    if (Platform.gameplayStop) Platform.gameplayStop(); // ТЗ №49, п.5: перед interstitial
     Platform.showInterstitial(function () {
       Nonogram.setPaused(false);
       Sound.resume();
@@ -758,27 +1029,27 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
-  /* ---- Хелперы категорий ---- */
+  /* ---- Хелперы глав (ТЗ №50, «Альбом») ---- */
 
-  function getCategoryOf(levelIndex) {
-    for (var i = 0; i < CATEGORIES.length; i++) {
-      if (CATEGORIES[i].indices.indexOf(levelIndex) >= 0) return CATEGORIES[i];
+  function chapterOfIndex(levelIndex) {
+    for (var i = 0; i < CHAPTERS.length; i++) {
+      if (CHAPTERS[i].indices.indexOf(levelIndex) >= 0) return CHAPTERS[i];
     }
     return null;
   }
 
-  // Первый непройденный уровень категории; если все пройдены — первый в категории
-  function firstUnfinishedIn(cat) {
-    for (var i = 0; i < cat.indices.length; i++) {
-      if (!_completedLevels[cat.indices[i]]) return cat.indices[i];
+  // Первый непройденный уровень главы; если все пройдены — первый в главе
+  function firstUnfinishedInChapter(ch) {
+    for (var i = 0; i < ch.indices.length; i++) {
+      if (!_completedLevels[ch.indices[i]]) return ch.indices[i];
     }
-    return cat.indices[0];
+    return ch.indices[0];
   }
 
-  function countCompleted(cat) {
+  function countCompletedInChapter(ch) {
     var n = 0;
-    for (var i = 0; i < cat.indices.length; i++) {
-      if (_completedLevels[cat.indices[i]]) n++;
+    for (var i = 0; i < ch.indices.length; i++) {
+      if (_completedLevels[ch.indices[i]]) n++;
     }
     return n;
   }
@@ -796,8 +1067,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function showMenu() {
     showScreen('menu');
+    trackEvent('menu_shown');
     retentionTick();
     if (typeof Retention !== 'undefined') renderRetentionStreakLine();
+    renderSeriesLine();
+    maybeShowLadderCard();
 
     var btnContinue = document.getElementById('btn-continue');
     var hasContinue = (_lastLevelIndex >= 0);
@@ -806,7 +1080,20 @@ document.addEventListener('DOMContentLoaded', function () {
     // onclick заменяет предыдущий обработчик — не накапливается при повторных вызовах
     document.getElementById('btn-play').onclick = function () {
       Sound.resumeContext();
-      showCategory();
+      // ТЗ №49, п.4 («Первые 60 секунд»): игрок без единого пройденного
+      // уровня идёт СРАЗУ в игру (уровень 0), минуя экран глав —
+      // карточка «Как читать числа» показывается только один раз
+      // (!_onboardingSeen), иначе прямо в уровень.
+      if (Object.keys(_completedLevels).length === 0) {
+        trackEvent('first_puzzle_started');
+        if (!_onboardingSeen) {
+          showOnboarding(function () { showGame(0); });
+        } else {
+          showGame(0);
+        }
+      } else {
+        showChapters();
+      }
     };
 
     btnContinue.onclick = hasContinue ? function () {
@@ -822,13 +1109,12 @@ document.addEventListener('DOMContentLoaded', function () {
       showDailyGame();
     };
 
-    var streakEl = document.getElementById('daily-streak');
-    if (_streak > 0) {
-      streakEl.textContent = I18N.t('streakLabel').replace('{n}', _streak);
-      streakEl.hidden = false;
-    } else {
-      streakEl.hidden = true;
-    }
+    // ТЗ №49, §2.3: «Пазлов подряд» (серия ежедневного режима, отдельная
+    // от лестницы механика) больше не показывается в меню — остаётся в
+    // подписи экрана пазла дня (showDailyGame) и в заголовке календаря
+    // (showCalendar), чтобы информация не терялась, а не дублировалась
+    // рядом с новой #series-line.
+    document.getElementById('daily-streak').hidden = true;
 
     document.getElementById('btn-calendar').onclick = function () {
       showCalendar();
@@ -1106,115 +1392,235 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
-  /* ---- Экран выбора сложнос��и ---- */
+  /* ---- Экран глав («Альбом», ТЗ №50) ---- */
 
-  // Первый уровень категории, который одновременно ОТКРЫТ замком и не
-  // пройден. null, если такого нет (категория либо вся пройдена, либо вся
-  // заперта раздатчиком) — ТЗ №01.
-  function firstOpenUnfinishedIn(cat) {
-    for (var i = 0; i < cat.indices.length; i++) {
-      var idx = cat.indices[i];
-      if (!_completedLevels[idx] && Retention.isLevelOpen(idx, _retentionState, RETENTION_CONFIG)) return idx;
+  // Первый уровень главы, который одновременно ОТКРЫТ замком (по позиции)
+  // и не пройден. null, если такого нет (глава либо вся пройдена, либо вся
+  // заперта раздатчиком) — ТЗ №01, перенесено на главы ТЗ №50.
+  function firstOpenUnfinishedInChapter(ch) {
+    for (var i = 0; i < ch.indices.length; i++) {
+      var idx = ch.indices[i];
+      if (!_completedLevels[idx] && Retention.isLevelOpen(ChaptersMap.indexToPos(idx), _retentionState, RETENTION_CONFIG)) return idx;
     }
     return null;
   }
 
-  function showCategory() {
+  function showThumbLockedToast() {
+    showRetentionToast(I18N.t('thumbLockedToast'));
+  }
+
+  // Строка замка запертой главы: «Откроется через {n} {word} · +{n} в
+  // {time} · или за ролик» — та же формула дистанции, что была у категорий
+  // (ТЗ №09 фаза 4), но по ПОЗИЦИИ первой картинки главы, не по индексу.
+  function chapterLockedLineText(ch) {
+    var firstPos = ChaptersMap.indexToPos(ch.indices[0]);
+    var n = Math.max(1, firstPos - Retention.dripBoundary(_retentionState, RETENTION_CONFIG));
+    var word = I18N.pluralRu(n, [I18N.t('puzzleWordOne'), I18N.t('puzzleWordFew'), I18N.t('puzzleWordMany')]);
+    var parts = [I18N.t('chapterLocked').replace('{n}', n).replace('{word}', word)];
+    var nextAt = Retention.nextUnlockAtMs(_retentionState, RETENTION_CONFIG);
+    if (nextAt != null) {
+      parts.push(I18N.t('chapterLockedDrip')
+        .replace('{n}', RETENTION_CONFIG.dripPerTick)
+        .replace('{time}', _formatClock(new Date(nextAt))));
+    }
+    // При полностью раскрытой кампании rewarded-кнопки уже нет (renderRewardedButton) —
+    // упоминать ролик в строке замка тогда было бы враньём.
+    if (!Retention.isCampaignFullyUnlocked(_retentionState, RETENTION_CONFIG)) {
+      parts.push(I18N.t('chapterLockedAd'));
+    }
+    return parts.join(' · ');
+  }
+
+  // Клик по запертой главе — прокрутка к rewarded-кнопке (если она видна)
+  // или тост с той же формулой замка.
+  function onLockedChapterClick() {
+    var btn = document.getElementById(RETENTION_CONFIG.domSlots.rewardedBtn);
+    if (btn && !btn.hidden) {
+      btn.scrollIntoView({ block: 'center', behavior: _reduceMotion() ? 'auto' : 'smooth' });
+    } else {
+      showRetentionToast(I18N.t('thumbLockedToast'));
+    }
+  }
+
+  function _reduceMotion() {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
+  // Статичный (без анимации) силуэт для миниатюр главы/открытки за главу —
+  // тем же способом, что buildSilhouette (Задача G), но без juice-анимации
+  // «проявления» — там она смысловая (победа ЭТОГО уровня), здесь просто
+  // маленькая метка «эта картинка пройдена».
+  function paintSilhouetteStatic(canvas, level, maxPx) {
+    var W = level.width, H = level.height;
+    var CELL = Math.max(1, Math.min(48, Math.floor((maxPx || 260) / Math.max(W, H))));
+    canvas.width  = W * CELL;
+    canvas.height = H * CELL;
+    var ctx = canvas.getContext('2d');
+    var style = getComputedStyle(document.documentElement);
+    var bg  = style.getPropertyValue('--bg').trim()  || '#f3ead6';
+    var ink = style.getPropertyValue('--ink').trim() || '#2b2723';
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = ink;
+    for (var r = 0; r < H; r++) {
+      for (var c = 0; c < W; c++) {
+        if (level.solution[r][c]) ctx.fillRect(c * CELL + 1, r * CELL + 1, CELL - 2, CELL - 2);
+      }
+    }
+  }
+
+  // Одна миниатюра ряда главы — kind: 'done' | 'open' | 'locked'.
+  function buildThumb(levelIndex, numberInChapter, kind) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'thumb is-' + kind;
+    if (kind === 'done') {
+      var canvas = document.createElement('canvas');
+      canvas.className = 'thumb-canvas';
+      btn.appendChild(canvas);
+      paintSilhouetteStatic(canvas, LEVELS[levelIndex], 26);
+      btn.addEventListener('click', function () { showGame(levelIndex); });
+    } else if (kind === 'open') {
+      var num = document.createElement('span');
+      num.className = 'thumb-num';
+      num.textContent = String(numberInChapter);
+      btn.appendChild(num);
+      btn.addEventListener('click', function () { showGame(levelIndex); });
+    } else {
+      var dot = document.createElement('span');
+      dot.className = 'thumb-num thumb-dot';
+      dot.textContent = '·';
+      btn.appendChild(dot);
+      btn.addEventListener('click', showThumbLockedToast);
+    }
+    return btn;
+  }
+
+  function showChapters() {
     retentionTick();
-    showScreen('category');
-    document.querySelector('#category [data-i18n="chooseLevel"]').textContent =
-      I18N.t('chooseLevel');
-    document.getElementById('category-total').textContent =
-      I18N.t('levelsAvailable');
+    showScreen('chapters');
     if (typeof Retention !== 'undefined') {
-      renderRetentionDripLine();
-      renderRewardedButton();
+      // ТЗ №49, п.4 («Первые 60 секунд»): у совсем нового игрока (<8
+      // пройдено) с щедрым запасом ещё непройденных открытых уровней (>3)
+      // строка раздатчика и кнопка rewarded прячутся — рано продавать
+      // «изобилие» тому, кто ещё не исчерпал стартовый запас; как только
+      // одно из условий перестаёт выполняться — обе снова видны как раньше.
+      var doneCount = Object.keys(_completedLevels).length;
+      var hideRetentionUpsell = doneCount < 8 &&
+        Retention.openUnfinishedCount(_retentionState, RETENTION_CONFIG) > 3;
+      var dripEl = document.getElementById(RETENTION_CONFIG.domSlots.dripLine);
+      if (hideRetentionUpsell) {
+        if (dripEl) dripEl.hidden = true;
+        document.getElementById(RETENTION_CONFIG.domSlots.rewardedBtn).hidden = true;
+      } else {
+        if (dripEl) dripEl.hidden = false;
+        renderRetentionDripLine();
+        renderRewardedButton();
+      }
       document.getElementById(RETENTION_CONFIG.domSlots.rewardedBtn).onclick = onRewardedButtonClick;
     }
 
-    var list = document.getElementById('category-list');
+    var list = document.getElementById('chapter-list');
     list.innerHTML = '';
+    var scrollTarget = null;
 
-    CATEGORIES.forEach(function (cat, catIdx) {
-      var done  = countCompleted(cat);
-      var total = cat.indices.length;
+    CHAPTERS.forEach(function (ch, chIdx) {
+      var done  = countCompletedInChapter(ch);
+      var total = ch.indices.length;
       var allDone = (done === total);
 
-      // ТЗ №01: категория «заперта», если в ней есть непройденное, но
-      // ничего из непройденного пока не открыто раздатчиком. В яндекс-
-      // сборке (Retention не подключён) замка нет вообще — locked всегда false.
-      var openTarget = (typeof Retention !== 'undefined') ? firstOpenUnfinishedIn(cat) : firstUnfinishedIn(cat);
+      // ТЗ №01/№50: глава «заперта», если в ней есть непройденное, но
+      // ничего из непройденного пока не открыто раздатчиком (по позиции).
+      var openTarget = (typeof Retention !== 'undefined') ? firstOpenUnfinishedInChapter(ch) : firstUnfinishedInChapter(ch);
       var locked = (typeof Retention !== 'undefined') && !allDone && openTarget === null;
 
-      var card = document.createElement('button');
-      card.className = 'cat-card' + (locked ? ' is-locked' : '');
+      var card = document.createElement('div');
+      card.className = 'chapter-card' + (locked ? ' is-locked' : '');
+
+      var head = document.createElement('button');
+      head.type = 'button';
+      head.className = 'chapter-head-btn';
 
       var nameEl = document.createElement('span');
-      nameEl.className = 'cat-name';
-      nameEl.textContent = I18N.t(cat.key);
+      nameEl.className = 'chapter-name';
+      nameEl.textContent = (chIdx + 1) + ' · ' + I18N.t(ch.nameKey);
 
       var progEl = document.createElement('span');
-      // Запрет (ТЗ №01, п.2.2): взаперти — без «X из Y» (знаменателя, общих
-      // чисел кампании), только замок. ТЗ №09, фаза 4 — санкционированное
-      // исключение из «без чисел»: дистанция (числитель без знаменателя,
-      // «скрытое будущее») отвечает на «сколько?», а не на «сколько всего»
-      // — той же природы, что и раздатчик (ТЗ №07/№08). allDone/обычный
-      // прогресс — как раньше.
+      progEl.className = 'chapter-progress' + (allDone ? ' is-done' : '');
       if (locked) {
-        progEl.className = 'cat-progress cat-lock-icon';
-        // N = индекс первого уровня категории минус текущая граница
-        // открытого (Retention.dripBoundary — старт+раздатчик). Пересчитывается
-        // при каждом показе экрана (showCategory зовётся заново), поэтому
-        // уменьшается от игры, раздатчика И rewarded-кнопки одинаково — все
-        // трое просто двигают dripOpened/maxReachedIndex, которые эта
-        // формула читает напрямую, отдельного счётчика для N не заведено.
-        // Math.max(1, …) — защитный пол: для по-настоящему запертой
-        // категории N не может быть <=0 (иначе она не была бы заперта, см.
-        // firstOpenUnfinishedIn), но не полагаемся на это молча.
-        var n = Math.max(1, cat.indices[0] - Retention.dripBoundary(_retentionState, RETENTION_CONFIG));
-        var word = I18N.pluralRu(n, [I18N.t('puzzleWordOne'), I18N.t('puzzleWordFew'), I18N.t('puzzleWordMany')]);
-        progEl.textContent = '🔒 ' + I18N.t('catLockedDistance').replace('{n}', n).replace('{word}', word);
+        progEl.textContent = '🔒';
+      } else if (allDone) {
+        progEl.textContent = '✓ ' + I18N.t('chapterProgress').replace('{k}', total);
       } else {
-        progEl.className = 'cat-progress' + (allDone ? ' is-done' : '');
-        progEl.textContent = allDone
-          ? I18N.t('catProgressAllDone')
-          : (done > 0 ? I18N.t('catProgressDone').replace('{n}', done) : I18N.t('catProgressNone'));
+        progEl.textContent = I18N.t('chapterProgress').replace('{k}', done);
       }
 
-      card.appendChild(nameEl);
-      card.appendChild(progEl);
-
-      // В категории «Обучение» — дополнительная кнопка «Как играть»
-      if (catIdx === 0) {
-        var howtoBtn = document.createElement('button');
-        howtoBtn.className = 'cat-howto-btn';
-        howtoBtn.textContent = I18N.t('howTo');
-        howtoBtn.addEventListener('click', function (e) {
-          e.stopPropagation();
-          showOnboarding(null);
-        });
-        card.appendChild(howtoBtn);
+      head.appendChild(nameEl);
+      head.appendChild(progEl);
+      if (_postcards[ch.key]) {
+        var badge = document.createElement('span');
+        badge.className = 'postcard-badge';
+        badge.textContent = '✉';
+        badge.setAttribute('aria-label', I18N.t('postcardLabel'));
+        badge.title = I18N.t('postcardLabel');
+        head.appendChild(badge);
       }
+      card.appendChild(head);
 
       if (locked) {
-        card.disabled = true;
+        head.addEventListener('click', onLockedChapterClick);
+        var lockLine = document.createElement('p');
+        lockLine.className = 'chapter-locked-line';
+        lockLine.textContent = chapterLockedLineText(ch);
+        card.appendChild(lockLine);
       } else {
-        card.addEventListener('click', function () {
-          var startIdx = allDone ? firstUnfinishedIn(cat) : openTarget;
-          if (!_onboardingSeen && catIdx === 0) {
+        head.addEventListener('click', function () {
+          var startIdx = allDone ? firstUnfinishedInChapter(ch) : openTarget;
+          if (!_onboardingSeen && chIdx === 0) {
             showOnboarding(function () { showGame(startIdx); });
           } else {
             showGame(startIdx);
           }
         });
+
+        var thumbs = document.createElement('div');
+        thumbs.className = 'chapter-thumbs';
+        ch.indices.forEach(function (idx, i) {
+          var kind;
+          if (_completedLevels[idx]) kind = 'done';
+          else if (typeof Retention === 'undefined' || Retention.isLevelOpen(ChaptersMap.indexToPos(idx), _retentionState, RETENTION_CONFIG)) kind = 'open';
+          else kind = 'locked';
+          thumbs.appendChild(buildThumb(idx, i + 1, kind));
+        });
+        card.appendChild(thumbs);
       }
+
+      // В главе 1 — дополнительная кнопка «Как играть» (ТЗ №50, п.2.5,
+      // как раньше была в категории «Обучение»).
+      if (chIdx === 0) {
+        var howtoBtn = document.createElement('button');
+        howtoBtn.type = 'button';
+        howtoBtn.className = 'chapter-howto-btn';
+        howtoBtn.textContent = I18N.t('howTo');
+        howtoBtn.addEventListener('click', function () {
+          showOnboarding(null);
+        });
+        card.appendChild(howtoBtn);
+      }
+
+      if (!allDone && scrollTarget === null) scrollTarget = card;
 
       list.appendChild(card);
     });
 
-    document.getElementById('btn-back-cat').onclick = function () {
+    document.getElementById('btn-back-chapters').onclick = function () {
       showMenu();
     };
+
+    // Первая незавершённая глава — в зону видимости (ТЗ №50, п.2.6).
+    if (scrollTarget) {
+      scrollTarget.scrollIntoView({ block: 'center', behavior: _reduceMotion() ? 'auto' : 'smooth' });
+    }
   }
 
   /* ---- Календарь месяца ---- */
@@ -1226,8 +1632,11 @@ document.addEventListener('DOMContentLoaded', function () {
     var y    = now.getFullYear();
     var m    = now.getMonth() + 1;  // 1-12
 
-    document.getElementById('cal-title').textContent =
-      I18N.t('month' + m) + ' ' + y;
+    // ТЗ №49, §2.3: «Пазлов подряд» скрыта из меню — остаётся здесь и в
+    // подписи экрана пазла дня (showDailyGame), чтобы не потеряться.
+    var calTitle = I18N.t('month' + m) + ' ' + y;
+    if (_streak > 0) calTitle += '  •  ' + I18N.t('streakLabel').replace('{n}', _streak);
+    document.getElementById('cal-title').textContent = calTitle;
 
     // Заголовки дней недели (Пн–Вс)
     var wdEl   = document.getElementById('cal-weekdays');
@@ -1330,6 +1739,12 @@ document.addEventListener('DOMContentLoaded', function () {
   function onClearBoardConfirmed() {
     document.getElementById('clear-confirm-overlay').hidden = true;
     Nonogram.clearBoard();
+    // ТЗ №51: очистка убирает все ошибки — таймер простоя/непрерывной
+    // ошибки должен начаться заново, иначе следующая ошибка унаследует
+    // старую метку времени и тост «лишняя клетка» может сработать сразу.
+    _errorSince = 0;
+    _lastMoveAt = Date.now();
+    updateCheckButton();
 
     if (_inDailyGame) {
       if (_dailySaveTimer) { clearTimeout(_dailySaveTimer); _dailySaveTimer = null; }
@@ -1355,24 +1770,38 @@ document.addEventListener('DOMContentLoaded', function () {
 
     _currentLevel = -1;   // обычное сохранение доски (по levelIndex) сюда не относится
     _inDailyGame  = true;
+    trackEvent('daily_shown');
+    if (Platform.gameplayStart) Platform.gameplayStart();
+    _levelStartedAt     = Date.now();
+    _hintsUsedThisLevel = 0;
     document.getElementById('win-overlay').hidden = true;
+    document.getElementById('chapter-done-overlay').hidden = true;
+    document.getElementById('win-chapter-line').hidden = true;
     document.getElementById('confetti-container').innerHTML = '';
     var dlabel = I18N.t('dailyLabel');
     if (_streak > 0) dlabel += '  •  ' + I18N.t('streakLabel').replace('{n}', _streak);
     document.getElementById('game-level-label').textContent = dlabel;
     document.getElementById('btn-hint').disabled = false;
+    document.getElementById('btn-check').disabled = false;
     document.getElementById('level-hint').hidden = true;
 
     modeBtns.forEach(function (b) {
       b.classList.toggle('is-active', parseInt(b.dataset.mode, 10) === 1);
     });
 
+    // ТЗ №51: сброс тостов/таймера простоя на вход в картинку — тот же
+    // приём, что и _levelStartedAt/_hintsUsedThisLevel выше.
+    _errorSince = 0;
+    _lastMoveAt = Date.now();
+    updateCheckButton();
+    startNudgeTimer();
+
     showScreen('game');
     Nonogram.render(
       level,
       document.getElementById('puzzle-container'),
       function () { onDailyWin(level); },
-      function ()  { Sound.tick(); scheduleDailySave(); },
+      function ()  { Sound.tick(); scheduleDailySave(); onBoardMove(); },
       function ()  { Sound.lineClosed(); }
     );
 
@@ -1380,12 +1809,18 @@ document.addEventListener('DOMContentLoaded', function () {
     // (устаревший при смене дня уже сброшен при загрузке сейва).
     if (_dailyBoard && _dailyBoardDate === _todayKey()) {
       Nonogram.restoreBoard(Save.decodeBoardAny(_dailyBoard));
+      // Восстановленная доска не проходит через onMove — если в ней уже
+      // есть ошибки, отсчёт непрерывной ошибки начинаем со входа в экран,
+      // а не с первого НОВОГО хода.
+      if (Nonogram.hasErrors()) _errorSince = Date.now();
     }
 
     document.getElementById('btn-back').onclick = function () {
+      if (Platform.gameplayStop) Platform.gameplayStop();
       flushDailySave();
       _currentLevel = -1;
       _inDailyGame  = false;
+      stopNudgeTimer();
       Nonogram.setPaused(false);
       Nonogram.resetZoom();
       showMenu();
@@ -1395,6 +1830,9 @@ document.addEventListener('DOMContentLoaded', function () {
   function onDailyWin(level) {
     Sound.win();
     document.getElementById('btn-hint').disabled = true;
+    document.getElementById('btn-check').disabled = true;
+    stopNudgeTimer();
+    if (Platform.gameplayStop) Platform.gameplayStop();
     if (_dailySaveTimer) { clearTimeout(_dailySaveTimer); _dailySaveTimer = null; }
     var today  = _todayKey();
     _streak    = _calcStreak(today, _dailyDone, _streak);  // ДО обновления _dailyDone
@@ -1406,8 +1844,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
     buildSilhouette(level);
     document.getElementById('win-theme-label').textContent = I18N.t(level.theme);
+    hideRetentionToast(); // ТЗ №51а: снять тост «почти собрал» ДО показа оверлея победы
     document.getElementById('win-overlay').hidden = false;
     launchConfetti();
+    if (renderWinTomorrow()) trackEvent('teaser_shown');
+    trackEvent('daily_done', { sec: Math.round((Date.now() - _levelStartedAt) / 1000), hints: _hintsUsedThisLevel });
+    updateShareButton(level, I18N.t('storyDaily').replace('{date}', storyDailyDateLabel()), -1);
 
     document.getElementById('btn-next-level').textContent = I18N.t('backToMenu');
     document.getElementById('btn-next-level').onclick = function () {
@@ -1421,14 +1863,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function showGame(levelIndex) {
     var level = LEVELS[levelIndex];
-    if (!level) { showCategory(); return; }
+    if (!level) { showChapters(); return; }
 
-    // ТЗ №01: замок — авторитетная проверка именно здесь (не только в
-    // клик-хендлерах экрана категорий), потому что «Продолжить»/следующий
-    // уровень после победы могут целиться в ещё не открытый раздатчиком
-    // индекс (следующий элемент категории не обязан быть уже разблокирован).
-    if (typeof Retention !== 'undefined' && !Retention.isLevelOpen(levelIndex, _retentionState, RETENTION_CONFIG)) {
-      showCategory();
+    // ТЗ №01/№50: замок — авторитетная проверка именно здесь (не только в
+    // клик-хендлерах экрана глав), потому что «Продолжить»/следующий
+    // уровень после победы могут целиться в ещё не открытую раздатчиком
+    // позицию (следующая картинка главы не обязана быть уже разблокирована).
+    // Замок работает по ПОЗИЦИЯМ — levelIndex переводится в позицию на
+    // границе с retention.js (см. RETENTION_CONFIG.callbacks выше).
+    if (typeof Retention !== 'undefined' && !Retention.isLevelOpen(ChaptersMap.indexToPos(levelIndex), _retentionState, RETENTION_CONFIG)) {
+      showChapters();
       return;
     }
 
@@ -1437,16 +1881,25 @@ document.addEventListener('DOMContentLoaded', function () {
     _inDailyGame    = false;
     // Монотонный «докуда добрался» для правила 2 замка (ТЗ №01) — НЕ то же
     // самое, что _lastLevelIndex (тот может двигаться нелинейно между
-    // категориями, см. onWin). Открывать/запирать это поле умеет только расти.
-    if (typeof Retention !== 'undefined') _maxReachedIndex = Math.max(_maxReachedIndex, levelIndex);
+    // главами, см. onWin). Открывать/запирать это поле умеет только расти.
+    if (typeof Retention !== 'undefined') _maxReachedPos = Math.max(_maxReachedPos, ChaptersMap.indexToPos(levelIndex));
+
+    // ТЗ №49, п.5: gameplayStart() при входе в картинку, track(puzzle_done)
+    // тайминг/счётчик подсказок — сброс на старте уровня.
+    if (Platform.gameplayStart) Platform.gameplayStart();
+    _levelStartedAt     = Date.now();
+    _hintsUsedThisLevel = 0;
 
     document.getElementById('win-overlay').hidden = true;
+    document.getElementById('chapter-done-overlay').hidden = true;
+    document.getElementById('win-chapter-line').hidden = true;
     document.getElementById('confetti-container').innerHTML = '';
     // #game-level-label используется и здесь, и в showDailyGame() — для
     // кампании он пуст (номер/общее число уровня на экране решения не
-    // показываются, см. showCategory для сводки доступных уровней).
+    // показываются, см. showChapters для сводки доступных уровней).
     document.getElementById('game-level-label').textContent = '';
     document.getElementById('btn-hint').disabled = false;
+    document.getElementById('btn-check').disabled = false;
 
     // Направляющая подсказка — только на первом уровне (index 0)
     var hintEl = document.getElementById('level-hint');
@@ -1465,25 +1918,35 @@ document.addEventListener('DOMContentLoaded', function () {
       b.classList.toggle('is-active', parseInt(b.dataset.mode, 10) === 1);
     });
 
+    // ТЗ №51: сброс тостов/таймера простоя на вход в картинку.
+    _errorSince = 0;
+    _lastMoveAt = Date.now();
+    updateCheckButton();
+    startNudgeTimer();
+
     showScreen('game');
     Nonogram.render(
       level,
       document.getElementById('puzzle-container'),
       function () { onWin(level, levelIndex); },
-      function ()  { Sound.tick(); scheduleBoardSave(levelIndex); },
+      function ()  { Sound.tick(); scheduleBoardSave(levelIndex); onBoardMove(); },
       function ()  { Sound.lineClosed(); }
     );
 
     if (_boardStates[levelIndex]) {
       Nonogram.restoreBoard(Save.decodeBoardAny(_boardStates[levelIndex]));
+      // См. комментарий у аналогичного restoreBoard в showDailyGame().
+      if (Nonogram.hasErrors()) _errorSince = Date.now();
     }
 
     document.getElementById('btn-back').onclick = function () {
+      if (Platform.gameplayStop) Platform.gameplayStop();
       flushBoardSave(levelIndex);
       _currentLevel = -1;
+      stopNudgeTimer();
       Nonogram.setPaused(false);
       Nonogram.resetZoom();
-      showCategory();
+      showChapters();
     };
   }
 
@@ -1492,39 +1955,125 @@ document.addEventListener('DOMContentLoaded', function () {
   function onWin(level, levelIndex) {
     Sound.win();
     document.getElementById('btn-hint').disabled = true;
+    document.getElementById('btn-check').disabled = true;
+    stopNudgeTimer();
+    if (Platform.gameplayStop) Platform.gameplayStop();
 
     if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
     delete _boardStates[levelIndex];
     _completedLevels[levelIndex] = true;
+    var completedCount = Object.keys(_completedLevels).length;
 
-    // Следующий уровень в той же категории
-    var cat = getCategoryOf(levelIndex);
+    // ТЗ №50: следующая позиция главы; если глава закончена — первая
+    // открытая непройденная позиция СЛЕДУЮЩЕЙ главы (правило ТЗ №49 «после
+    // обучения — в Лёгкие» — теперь частный случай этого же общего правила
+    // для КАЖДОЙ главы, не только первой).
+    var chapter = chapterOfIndex(levelIndex);
+    var posInChapter = chapter ? chapter.indices.indexOf(levelIndex) : -1;
     var nextIndex = -1;
-    if (cat) {
-      var pos = cat.indices.indexOf(levelIndex);
-      if (pos + 1 < cat.indices.length) nextIndex = cat.indices[pos + 1];
+    if (chapter && posInChapter + 1 < chapter.indices.length) {
+      nextIndex = chapter.indices[posInChapter + 1];
+    } else if (chapter) {
+      var nextChapter = CHAPTERS[CHAPTERS.indexOf(chapter) + 1];
+      if (nextChapter) {
+        var openNext = (typeof Retention !== 'undefined')
+          ? firstOpenUnfinishedInChapter(nextChapter)
+          : firstUnfinishedInChapter(nextChapter);
+        if (openNext !== null && openNext !== undefined) nextIndex = openNext;
+      }
+    }
+
+    // Награда за главу (ТЗ №50): первое завершение всех 10 картинок главы.
+    var chapterJustCompleted = false;
+    if (chapter && !_postcards[chapter.key]) {
+      var allDoneInChapter = chapter.indices.every(function (i) { return !!_completedLevels[i]; });
+      if (allDoneInChapter) chapterJustCompleted = true;
     }
 
     // lastLevelIndex: на следующий если есть, иначе остаёмся на текущем
     _lastLevelIndex = (nextIndex >= 0) ? nextIndex : levelIndex;
+    if (chapterJustCompleted) {
+      _postcards[chapter.key] = true;
+      _bonusHints += 3;
+      updateHintBadge();
+      updateCheckButton();
+    }
     saveProgress();
 
     buildSilhouette(level);
     document.getElementById('win-theme-label').textContent = I18N.t(level.theme);
+    if (chapter) {
+      document.getElementById('win-chapter-line').hidden = false;
+      document.getElementById('win-chapter-line').textContent = I18N.t('winChapterLine')
+        .replace('{k}', posInChapter + 1)
+        .replace('{name}', I18N.t(chapter.nameKey));
+    } else {
+      document.getElementById('win-chapter-line').hidden = true;
+    }
+    hideRetentionToast(); // ТЗ №51а: снять тост «почти собрал» ДО показа оверлея победы
     document.getElementById('win-overlay').hidden = false;
     launchConfetti();
+    if (renderWinTomorrow()) trackEvent('teaser_shown');
+    trackEvent('puzzle_done', {
+      index: levelIndex,
+      sec:   Math.round((Date.now() - _levelStartedAt) / 1000),
+      hints: _hintsUsedThisLevel,
+    });
+    updateShareButton(
+      level,
+      chapter ? I18N.t('storyChapter').replace('{name}', I18N.t(chapter.nameKey)) : '',
+      levelIndex
+    );
 
-    document.getElementById('btn-next-level').textContent = I18N.t('next');
-    document.getElementById('btn-next-level').onclick = function () {
+    // ТЗ №49, п.5: крючки площадок — СТРОГО после показа экрана победы, не
+    // перед ним. 2-й пройденный уровень кампании -> избранное+ярлык, 5-й ->
+    // рекомендовать+отзыв, каждый крючок не больше раза за игрока.
+    if (completedCount === 2 && !_hooksShown.fav) {
+      _hooksShown.fav = true;
+      _hooksShown.shortcut = true;
+      saveProgress();
+      if (Platform.promptAddToFavorites) Platform.promptAddToFavorites();
+      if (Platform.promptShortcut) Platform.promptShortcut();
+      trackEvent('favorites_prompt');
+    } else if (completedCount === 5 && !_hooksShown.rec) {
+      _hooksShown.rec = true;
+      _hooksShown.review = true;
+      saveProgress();
+      if (Platform.promptRecommend) Platform.promptRecommend();
+      if (Platform.requestReview) Platform.requestReview();
+    }
+
+    function goNext() {
       _currentLevel = -1;
       maybeShowInterstitial(function () {
         if (nextIndex >= 0) {
           showGame(nextIndex);
         } else {
-          showCategory();
+          showChapters();
         }
       });
-    };
+    }
+
+    document.getElementById('btn-next-level').textContent = I18N.t('next');
+    document.getElementById('btn-next-level').onclick = goNext;
+
+    // Награда за главу — оверлей #chapter-done ПОВЕРХ экрана победы,
+    // после конфетти (ТЗ №50, п.3). Его собственная кнопка «Дальше» ведёт
+    // ТУДА ЖЕ (goNext) — interstitial-гейт (maybeShowInterstitial) не
+    // меняется и не вызывается дважды за одну победу.
+    if (chapterJustCompleted) {
+      trackEvent('chapter_done', { ch: chapter.key });
+      var finalLevel = LEVELS[chapter.indices[chapter.indices.length - 1]];
+      paintSilhouetteStatic(document.getElementById('chapter-done-canvas'), finalLevel, 180);
+      document.getElementById('chapter-done-title').textContent =
+        I18N.t('chapterDoneTitle').replace('{name}', I18N.t(chapter.nameKey));
+      document.getElementById('chapter-done-reward').textContent = I18N.t('chapterDoneReward');
+      document.getElementById('chapter-done-overlay').hidden = false;
+      document.getElementById('btn-chapter-done-next').onclick = function () {
+        document.getElementById('chapter-done-overlay').hidden = true;
+        goNext();
+      };
+    }
   }
 
   /* ---- Подсказка за рекламу ---- */
@@ -1547,7 +2096,9 @@ document.addEventListener('DOMContentLoaded', function () {
     // рекламный показ игрока — просто эта подсказка не рекламная).
     if (_bonusHints > 0) {
       _bonusHints--;
+      _hintsUsedThisLevel++;
       updateHintBadge();
+      updateCheckButton();
       Nonogram.applyHint(hint);
       saveProgress();
       if (!Nonogram.findHint()) {
@@ -1566,6 +2117,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // основателя 2026-09-06).
     showAdLoadingOverlay();
     lockRewardedGate();
+    if (Platform.gameplayStop) Platform.gameplayStop(); // ТЗ №49, п.5: перед rewarded
     Platform.showRewarded(
       function () { pendingHint = hint; },
       function () {
@@ -1576,12 +2128,234 @@ document.addEventListener('DOMContentLoaded', function () {
         if (pendingHint) {
           Nonogram.applyHint(pendingHint);
           pendingHint = null;
+          _hintsUsedThisLevel++;
           if (!Nonogram.findHint()) {
             document.getElementById('btn-hint').disabled = true;
           }
         }
       }
     );
+  }
+
+  /* ---- ТЗ №51: кнопка «Проверить» ---- */
+
+  // Ключ «текущей картинки» для состояний, живущих только в памяти сессии
+  // (_freeCheckUsed/_nudgeShownFor/_nearWinShownFor) — кампания адресуется
+  // индексом уровня, пазл дня — датой (бесплатная проверка/тосты пазла дня
+  // «сгорают» и заводятся заново на следующий день, как и сам пазл).
+  function checkStateKey() {
+    return (_currentLevel >= 0) ? ('c' + _currentLevel) : ('d' + _todayKey());
+  }
+
+  function updateCheckButton() {
+    var btn = document.getElementById('btn-check');
+    if (!btn) return;
+    var key  = checkStateKey();
+    var mode = !_freeCheckUsed[key] ? 'free' : (_bonusHints > 0 ? 'hint' : 'ad');
+    var captionKey = mode === 'free' ? 'checkFree' : (mode === 'hint' ? 'checkForHint' : 'checkForAd');
+    var caption = document.getElementById('check-caption');
+    if (caption) {
+      caption.textContent = I18N.t(captionKey);
+      caption.setAttribute('data-i18n', captionKey);
+    }
+    // Иконка рекламы — только в режиме «за рекламу» (п.2 ТЗ №51), иначе
+    // статичная «✓» (см. index.html #check-icon-mark/#check-ad-icon).
+    // ТЗ №51а: #check-ad-icon — <svg>, у SVGElement нет IDL-свойства hidden
+    // (оно определено только на HTMLElement) — `adIcon.hidden = …` тихий
+    // no-op, атрибут hidden в разметке никогда не менялся, значок оставался
+    // виден во всех режимах. toggleAttribute — обычный метод Element,
+    // работает одинаково на HTML и SVG; правило #check-ad-icon[hidden] в
+    // style.css довершает (без него [hidden] на svg тоже не прячет узел).
+    var adIcon = document.getElementById('check-ad-icon');
+    var mark   = document.getElementById('check-icon-mark');
+    if (adIcon) adIcon.toggleAttribute('hidden', mode !== 'ad');
+    if (mark)   mark.toggleAttribute('hidden', mode === 'ad');
+  }
+
+  function onCheckClick() {
+    window.debugLog('click: #btn-check (bonusHints=' + _bonusHints + ')');
+    if (!_rewardedGateOpen) {
+      window.debugLog('click: #btn-check проигнорирован — предыдущий запрос ещё в полёте');
+      return;
+    }
+
+    // 1. Ошибок нет — сказать об этом, ничего не тратить, короткий
+    // дабл-клик-предохранитель (2с), симметричный формулировке ТЗ.
+    if (!Nonogram.hasErrors()) {
+      showRetentionToast(I18N.t('checkNoErrors'));
+      trackEvent('check_used', { mode: 'free', fixed: 0 });
+      var noErrBtn = document.getElementById('btn-check');
+      if (noErrBtn) {
+        noErrBtn.disabled = true;
+        setTimeout(function () { noErrBtn.disabled = false; }, 2000);
+      }
+      return;
+    }
+
+    var key = checkStateKey();
+
+    // 2. Бесплатная проверка ещё не потрачена на эту картинку.
+    if (!_freeCheckUsed[key]) {
+      _freeCheckUsed[key] = true;
+      var fixedFree = Nonogram.revealErrors();
+      showRetentionToast(I18N.t('checkFixed').replace('{n}', fixedFree));
+      trackEvent('check_used', { mode: 'free', fixed: fixedFree });
+      updateCheckButton();
+      return;
+    }
+
+    // 3. Бесплатных подсказок в балансе хватает — тратим одну.
+    if (_bonusHints > 0) {
+      _bonusHints--;
+      updateHintBadge();
+      var fixedHint = Nonogram.revealErrors();
+      showRetentionToast(I18N.t('checkFixed').replace('{n}', fixedHint));
+      trackEvent('check_used', { mode: 'hint', fixed: fixedHint });
+      saveProgress();
+      updateCheckButton();
+      return;
+    }
+
+    // 4. Иначе — тот же путь, что и подсказка за рекламу (переиспользуем
+    // те же обёртки: showAdLoadingOverlay/lockRewardedGate/идемпотентность
+    // через onReward->onClose, см. onHintClick выше).
+    var pendingCheck = false;
+    if (_currentLevel >= 0) flushBoardSave(_currentLevel);
+    Sound.suspend();
+    Nonogram.setPaused(true);
+    showAdLoadingOverlay();
+    lockRewardedGate();
+    if (Platform.gameplayStop) Platform.gameplayStop();
+    Platform.showRewarded(
+      function () { pendingCheck = true; },
+      function () {
+        unlockRewardedGate();
+        hideAdLoadingOverlay();
+        Nonogram.setPaused(false);
+        Sound.resume();
+        if (pendingCheck) {
+          pendingCheck = false;
+          var fixedAd = Nonogram.revealErrors();
+          showRetentionToast(I18N.t('checkFixed').replace('{n}', fixedAd));
+          trackEvent('check_used', { mode: 'ad', fixed: fixedAd });
+          updateCheckButton();
+        }
+      }
+    );
+  }
+
+  /* ---- ТЗ №51: мягкие тосты без кнопки ---- */
+
+  // Вызывается из onMove-колбэка Nonogram.render (showGame/showDailyGame) —
+  // на КАЖДЫЙ ход, не только на закраску (autoFillCrosses/крестики тоже
+  // зовут _onMove, что и нужно: простой считается от любого действия
+  // игрока, не только от заливки).
+  function onBoardMove() {
+    var now = Date.now();
+    _lastMoveAt = now;
+    if (Nonogram.hasErrors()) {
+      if (!_errorSince) _errorSince = now;
+    } else {
+      _errorSince = 0;
+    }
+
+    // «Почти собрал»: remainingCells()===0 — это победа (перекрывает тост,
+    // см. ТЗ), remainingCells()<=0 не входит в диапазон ниже, специальной
+    // проверки не требуется.
+    var key = checkStateKey();
+    var remaining = Nonogram.remainingCells();
+    if (remaining > 0 && remaining <= 3 && !Nonogram.hasErrors() && !_nearWinShownFor[key]) {
+      _nearWinShownFor[key] = true;
+      var word = I18N.pluralRu(remaining, [I18N.t('cellWordOne'), I18N.t('cellWordFew'), I18N.t('cellWordMany')]);
+      showRetentionToast(I18N.t('nearWin').replace('{n}', remaining).replace('{word}', word));
+    }
+  }
+
+  function startNudgeTimer() {
+    stopNudgeTimer();
+    _nudgeTimer = setInterval(function () {
+      if (!Nonogram.hasErrors() || !_errorSince) return;
+      var key = checkStateKey();
+      if (_nudgeShownFor[key]) return;
+      var now = Date.now();
+      if (now - _errorSince >= NUDGE_ERROR_MS && now - _lastMoveAt >= NUDGE_IDLE_MS) {
+        _nudgeShownFor[key] = true;
+        showRetentionToast(I18N.t('checkNudge'));
+      }
+    }, 5000);
+  }
+
+  function stopNudgeTimer() {
+    if (_nudgeTimer) { clearInterval(_nudgeTimer); _nudgeTimer = null; }
+  }
+
+  /* ---- ТЗ №51: шеринг картинки в историю ВК (только ВК-сборка) ---- */
+
+  // Канвас 1080×1920, только canvas + системный шрифт (никаких внешних
+  // шрифтов/картинок — требование ТЗ). subtitle — «глава «Имя»» (кампания)
+  // либо «Пазл дня, {дата}» (daily), готовая строка от вызывающей стороны.
+  function buildStoryImage(level, subtitle) {
+    var canvas = document.createElement('canvas');
+    canvas.width  = 1080;
+    canvas.height = 1920;
+    var ctx = canvas.getContext('2d');
+    var style = getComputedStyle(document.documentElement);
+    var bg  = style.getPropertyValue('--bg').trim()  || '#f3ead6';
+    var ink = style.getPropertyValue('--ink').trim() || '#2b2723';
+
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    var W = level.width, H = level.height;
+    var maxSize = 860; // px — силуэт крупно по центру
+    var cell = Math.max(1, Math.floor(maxSize / Math.max(W, H)));
+    var gridW = W * cell, gridH = H * cell;
+    var gridX = Math.round((canvas.width  - gridW) / 2);
+    var gridY = Math.round((canvas.height - gridH) / 2);
+
+    ctx.fillStyle = ink;
+    for (var r = 0; r < H; r++) {
+      for (var c = 0; c < W; c++) {
+        if (level.solution[r][c]) ctx.fillRect(gridX + c * cell, gridY + r * cell, cell, cell);
+      }
+    }
+
+    ctx.fillStyle = ink;
+    ctx.textAlign = 'center';
+    ctx.font = '600 56px system-ui, sans-serif';
+    ctx.fillText(I18N.t(level.theme), canvas.width / 2, gridY - 110);
+
+    ctx.font = '400 38px system-ui, sans-serif';
+    ctx.fillText(subtitle, canvas.width / 2, gridY - 50);
+
+    ctx.font = '400 34px system-ui, sans-serif';
+    ctx.fillText(I18N.t('gameTitle'), canvas.width / 2, canvas.height - 90);
+
+    return canvas.toDataURL('image/png');
+  }
+
+  function shareCurrentLevel(level, subtitle, trackIndex) {
+    var img = buildStoryImage(level, subtitle);
+    Platform.shareStory(img).then(function (ok) {
+      if (ok) showRetentionToast(I18N.t('shareDone'));
+    });
+    trackEvent('share_story', { index: trackIndex });
+  }
+
+  // «15 сентября 2026» — тот же приём, что showCalendar() (I18N.t('month'+m)),
+  // без внешних библиотек форматирования дат.
+  function storyDailyDateLabel() {
+    var now = Platform.now();
+    return now.getDate() + ' ' + I18N.t('month' + (now.getMonth() + 1)) + ' ' + now.getFullYear();
+  }
+
+  function updateShareButton(level, subtitle, trackIndex) {
+    var btn = document.getElementById('btn-share');
+    if (!btn) return;
+    var can = !!(Platform.canShareStory && Platform.canShareStory());
+    btn.hidden = !can;
+    if (!can) return;
+    btn.onclick = function () { shareCurrentLevel(level, subtitle, trackIndex); };
   }
 
   /* ---- Силуэт ---- */
@@ -1641,6 +2415,58 @@ document.addEventListener('DOMContentLoaded', function () {
       }
     }
     _silhouetteRAF = requestAnimationFrame(step);
+  }
+
+  /* ---- ТЗ №49, §3: тизер завтрашней картинки дня (экран победы) ---- */
+
+  // Статичный маленький силуэт (без анимации «проявления» — она уместна
+  // только для КОМАНДА текущего уровня, buildSilhouette выше) — тот же
+  // подход отрисовки: закрашенные клетки level.solution заливкой var(--ink)
+  // на var(--bg), просто в один проход, без RAF.
+  function buildTeaserSilhouette(level) {
+    var canvas = document.getElementById('win-tomorrow-canvas');
+    if (!canvas) return;
+    var W = level.width, H = level.height;
+    var CELL = Math.max(1, Math.floor(72 / Math.max(W, H)));
+    canvas.width  = W * CELL;
+    canvas.height = H * CELL;
+    var ctx = canvas.getContext('2d');
+    var style = getComputedStyle(document.documentElement);
+    var bg  = style.getPropertyValue('--bg').trim()  || '#f3ead6';
+    var ink = style.getPropertyValue('--ink').trim() || '#2b2723';
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = ink;
+    for (var r = 0; r < H; r++) {
+      for (var c = 0; c < W; c++) {
+        if (level.solution[r][c]) ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+      }
+    }
+  }
+
+  // Показывает блок #win-tomorrow на экране победы (кампания и daily —
+  // вызывается из onWin/onDailyWin), только если DAILY_LEVELS подключён
+  // (ТЗ №49: теперь общий для обеих сборок, но защитный typeof-гард
+  // оставлен на случай раздельной сборки без daily_levels.js). Возвращает
+  // true, если блок реально показан (для trackEvent('teaser_shown')).
+  function renderWinTomorrow() {
+    var el = document.getElementById('win-tomorrow');
+    if (!el) return false;
+    if (typeof DAILY_LEVELS === 'undefined') { el.hidden = true; return false; }
+
+    var tomorrowIdx = _dailyIndex(_tomorrowDate());
+    var level = DAILY_LEVELS[tomorrowIdx];
+    if (!level) { el.hidden = true; return false; }
+
+    // Если завтрашний пазл дня совпадает с сегодняшним индексом И сегодня
+    // уже пройден (цикл пула короче года — невозможно при пуле 30, но
+    // защищаемся: не блюрить картинку, которую игрок уже видел решённой).
+    var alreadySeen = (tomorrowIdx === _dailyIndex()) && (_dailyDone === _todayKey());
+
+    buildTeaserSilhouette(level);
+    document.getElementById('win-tomorrow-canvas').classList.toggle('is-blurred', !alreadySeen);
+    el.hidden = false;
+    return true;
   }
 
   /* ---- Конфетти ---- */
