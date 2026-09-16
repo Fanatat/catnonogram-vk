@@ -151,9 +151,34 @@
       // компактный блок модуля (см. retention.js encodeState/decodeState),
       // null у игрока без этих полей — main.js сам вызовет
       // Retention.initState() при загрузке.
+      // ТЗ №50: замок теперь работает по ПОЗИЦИЯМ в порядке глав
+      // (chapters_map.js posToIndex/indexToPos), а не по индексам LEVELS —
+      // maxReachedIndex (поле не переименовано, совместимость сейвов и
+      // тестов) с этого момента хранит позицию. posLock:true отмечает
+      // сейв, где это уже так — см. migrate() ниже: старый сейв без флага
+      // получает maxReachedIndex, переведённый в позиции честной формулой
+      // «сколько сыграл — столько и достиг» (не переводом старого индекса,
+      // см. комментарий в migrate()).
       maxReachedIndex: -1,
+      posLock:         true,
       bonusHints:      0,
       retention:       null,
+      // ТЗ №50: главы, за которые уже выдана награда (открытка + подсказки)
+      // при первом прохождении всех 10 картинок главы — { ch01: true, … }.
+      postcards:       {},
+      // ТЗ №49 (лестница 7 дней, ladder.js). ladderDay/ladderSeries/
+      // ladderLastDay — поля ladder.js state как есть (плоские, не нужен
+      // отдельный encode/decode — см. ladder.js). ladderClaimedDay —
+      // 'YYYY-M-D' дня, за который уже забрана награда (ladder.isClaimed).
+      // hooksShown — { fav, rec, shortcut, review } (ТЗ №49, п.5): какие
+      // крючки площадок (избранное/рекомендовать ВК, ярлык/отзыв Яндекса)
+      // уже показаны этому игроку — каждый крючок звучит не больше одного
+      // раза за игрока.
+      ladderDay:        0,
+      ladderLastDay:    '',
+      ladderSeries:     0,
+      ladderClaimedDay: '',
+      hooksShown:       {},
     };
   }
 
@@ -234,6 +259,35 @@
     }
     out.bonusHints = (typeof oldSave.bonusHints === 'number') ? oldSave.bonusHints : 0;
     out.retention   = (oldSave.retention && typeof oldSave.retention === 'object') ? oldSave.retention : null;
+
+    // ТЗ №50: перевод замка на позиции. Сейв уже в позициях (posLock===true) —
+    // maxReachedIndex выше не трогаем, он и так позиция. Старый сейв
+    // (posLock отсутствует/не true) — честный перевод «сколько пройдено —
+    // столько позиций и достиг»: пройденные индексы у старого игрока
+    // разбросаны по нескольким главам (главы 1, 2, 3, 7, 11, 12, 13 —
+    // см. CLAUDE.md), поэтому перевод СТАРОГО ИНДЕКСА в позицию открыл бы
+    // почти весь альбом; количество же честно и не отнимает ничего —
+    // пройденные уровни всё равно всегда открыты (правило 1 замка).
+    // dripOpened/lastTickAt (внутри retention-блока выше) не трогаем.
+    if (oldSave.posLock !== true) {
+      out.maxReachedIndex = Math.max(-1, Object.keys(out.completedLevels).length - 1);
+    }
+    out.posLock = true;
+
+    out.postcards = (oldSave.postcards && typeof oldSave.postcards === 'object') ? oldSave.postcards : {};
+
+    // ТЗ №49: поля лестницы — обычный сквозной проход валидных значений,
+    // отсутствие/битый тип -> дефолт emptySave(). Одноразовая миграция
+    // игрока старой серии входов (retention.js) НА лестницу — НЕ здесь:
+    // ей нужен доступ к _retentionState.streakLen/streakRewards, которых
+    // save.js принципиально не знает (чистые функции без знания формата
+    // retention-блока, см. заголовок файла) — делается в main.js после
+    // загрузки (ТЗ №49, п.2.2).
+    out.ladderDay        = (typeof oldSave.ladderDay === 'number') ? oldSave.ladderDay : 0;
+    out.ladderLastDay    = (typeof oldSave.ladderLastDay === 'string') ? oldSave.ladderLastDay : '';
+    out.ladderSeries     = (typeof oldSave.ladderSeries === 'number') ? oldSave.ladderSeries : 0;
+    out.ladderClaimedDay = (typeof oldSave.ladderClaimedDay === 'string') ? oldSave.ladderClaimedDay : '';
+    out.hooksShown       = (oldSave.hooksShown && typeof oldSave.hooksShown === 'object') ? oldSave.hooksShown : {};
 
     // Подчистка «призрачных» пустых досок — старые сейвы могли записать
     // недорешённую доску, которую потом стёрли до нуля (см. фикс в main.js:

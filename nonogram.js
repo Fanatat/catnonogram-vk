@@ -795,6 +795,61 @@ window.Nonogram = (function () {
     refreshAllClueFade();
   }
 
+  /* ----------------------------------------------------------
+     ТЗ №51 — «Проверить»: чистые запросы состояния поля.
+     Крестики на клетках решения (0) ошибкой не считаются — игрок
+     сам увидит, что линия не гаснет, штрафовать нечего.
+  ---------------------------------------------------------- */
+  function findErrors() {
+    if (!_level) return [];
+    var H = _level.height, W = _level.width, sol = _level.solution;
+    var errors = [];
+    for (var r = 0; r < H; r++) {
+      for (var c = 0; c < W; c++) {
+        if (_boardState[r][c] === 1 && sol[r][c] === 0) errors.push({ r: r, c: c });
+      }
+    }
+    return errors;
+  }
+
+  function hasErrors() {
+    return findErrors().length > 0;
+  }
+
+  function remainingCells() {
+    if (!_level) return 0;
+    var H = _level.height, W = _level.width, sol = _level.solution;
+    var n = 0;
+    for (var r = 0; r < H; r++) {
+      for (var c = 0; c < W; c++) {
+        if (sol[r][c] === 1 && _boardState[r][c] !== 1) n++;
+      }
+    }
+    return n;
+  }
+
+  // Исправляет все ошибочные клетки (лишняя закраска → крестик), возвращает
+  // число исправленных. Победу проверяем так же, как в applyHint — снятие
+  // ошибок само по себе победу не даёт (решение всё ещё неполное), но
+  // симметрия с applyHint дешевле специального случая.
+  function revealErrors() {
+    var errors = findErrors();
+    for (var i = 0; i < errors.length; i++) {
+      var r = errors[i].r, c = errors[i].c;
+      shakeCell(r, c);
+      _boardState[r][c] = 2;
+      renderCell(r, c);
+      autoFillCrosses(r, c);
+      updateClueFade(r, c);
+    }
+    if (errors.length && _onMove) _onMove();
+    if (checkWin(_boardState, _level.solution)) {
+      _won = true;
+      if (_onWin) _onWin();
+    }
+    return errors.length;
+  }
+
   function setPaused(v) { _paused = !!v; }
 
   function getBoardState() {
@@ -830,5 +885,9 @@ window.Nonogram = (function () {
     getBoardState: getBoardState,
     restoreBoard:  restoreBoard,
     resetZoom:     resetZoom,
+    findErrors:      findErrors,
+    hasErrors:       hasErrors,
+    remainingCells:  remainingCells,
+    revealErrors:    revealErrors,
   };
 })();

@@ -256,15 +256,24 @@ window.Platform = (function () {
   }
 
   /* ---------------------------------------------------------------
-     ТЗ №09/№10 — сти́ки-баннер (VKWebAppShowBannerAd). Параметры сверены
-     с докой базы «Баннерная реклама для VK» (VK_banner_doc_dlya_CC.md,
+     ТЗ №09/№10/№53 — сти́ки-баннер (VKWebAppShowBannerAd). Параметры
+     сверены с докой базы «Баннерная реклама для VK» (VK_banner_doc_dlya_CC.md,
      передана советом дословно). ТЗ №10: живой заход основателя показал,
      что overlay накрывает карточки категорий — 'overlay' по смыслу и
-     означает «поверх». Водопад режимов (ТЗ №10, диагноз п.0):
-       Шаг A — десктоп: layout_type:'resize' вместо 'overlay' (в доке
-         подтверждён только для мобильного приложения; для десктопа
-         поддержка НЕ подтверждена первоисточником — заказываем, но не
-         полагаемся на него одного).
+     означает «поверх».
+     ТЗ №53 (2026-09-15), ФАКТ по живому ВК: до ТЗ №10 (v23, 'overlay')
+     основатель баннер на десктопе ВИДЕЛ (он накрывал карточки — ровно
+     то, что чинило ТЗ №10). После перехода на layout_type:'resize'
+     (введён ТЗ №10 как шаг A) баннера на десктопе не стало — resize
+     для десктопа в доке не описан (только для мобильного приложения) и
+     на практике не сработал. Поэтому десктоп ВОЗВРАЩЁН на
+     документированный набор — 'overlay'/'right'/'vertical', ровно как в
+     таблице «Десктопная версия сайта». Собственный резерв места (шаг B
+     ниже) не зависит от факта resize и решает «баннер не накрывает
+     контент» без него — остаётся как есть. Диагностика (см. showBannerAd
+     ниже) — чтобы следующий живой заход основателя дал точный ответ,
+     если баннер снова не появится.
+       Шаг A — десктоп: см. факт выше.
        Шаг B — ГАРАНТИРОВАННЫЙ, не зависит от того, послушал ли VK шаг A:
          остаёмся на факте (баннер может визуально оставаться overlay),
          но САМИ резервируем место игровому контейнеру по РЕАЛЬНЫМ
@@ -361,20 +370,31 @@ window.Platform = (function () {
     return { width: w, height: h };
   }
 
-  function showBannerAd() {
+  // ТЗ №53, п.3.2: мост иногда не готов сразу после init — если
+  // VKWebAppShowBannerAd реджектится, ОДНА повторная попытка через 3с с
+  // теми же параметрами, не больше (isRetry — не пускает вторую). После
+  // VKWebAppBannerAdClosedByUser повторов нет (_bannerClosedByUser — как
+  // и раньше не пускает showBannerAd() вообще, см. первую строку).
+  var BANNER_RETRY_DELAY_MS = 3000;
+
+  function jsonForLog(v) {
+    try { return JSON.stringify(v); } catch (e) { return String(v); }
+  }
+
+  function showBannerAd(isRetry) {
     if (!available || _bannerClosedByUser) return;
     var desktop = isDesktopPlatform();
     var beforeSize = desktop ? window.innerWidth : window.innerHeight;
     var params = desktop
-      ? { layout_type: 'resize', banner_align: 'right', orientation: 'vertical' } // Шаг A
+      ? { layout_type: 'overlay', banner_align: 'right', orientation: 'vertical' } // Шаг A (ТЗ №53: overlay, документированный набор)
       : { banner_location: 'bottom' };
     // Показ — тихий: ошибка/недоступность не блокирует и не ломает игру
     // (вне платформы — no-op через available выше; внутри платформы —
     // просто нет баннера, что уже фактически "не мешает").
-    if (window.debugLog) window.debugLog('showBannerAd: -> AndroidBridge/мост VKWebAppShowBannerAd (для сравнения с rewarded — этот путь обычно отвечает)');
+    if (window.debugLog) window.debugLog('showBannerAd' + (isRetry ? ' (повтор)' : '') + ': params=' + jsonForLog(params));
     vkBridge.send('VKWebAppShowBannerAd', params)
-      .then(function () {
-        if (window.debugLog) window.debugLog('showBannerAd: мост ОТВЕТИЛ (успех)');
+      .then(function (res) {
+        if (window.debugLog) window.debugLog('showBannerAd: мост ОТВЕТИЛ (успех) res=' + jsonForLog(res));
         // Оптимистично, СРАЗУ по запасному размеру (ТЗ №10, шаг B) — не
         // ждём подтверждения факта resize, чтобы не было окна, где баннер
         // уже показан, а карточки ещё не подвинуты (тот самый баг ТЗ №10).
@@ -385,10 +405,13 @@ window.Platform = (function () {
         // VKWebAppCheckBannerAd при старте (ТЗ №10, шаг B) — уточняет
         // резерв реальным размером, если Bridge его отдаёт.
         vkBridge.send('VKWebAppCheckBannerAd').then(function (res) {
+          if (window.debugLog) window.debugLog('CheckBannerAd: res=' + jsonForLog(res));
           if (_platformReservesSpace) return; // площадка уже подтверждена — не перетираем 0
           var size = extractBannerSize(res);
           if (size) applyBannerReserve(desktop ? size.width : size.height);
-        }).catch(function () { /* остаёмся на запасном размере */ });
+        }).catch(function (e) {
+          if (window.debugLog) window.debugLog('CheckBannerAd: ошибка ' + jsonForLog(e) + ' — остаёмся на запасном размере');
+        });
 
         // Параллельно — ТЗ №11, Фаза 1: проверяем ФАКТ (сравнение размера
         // окна до/после показа баннера), не ужала ли площадка окно сама.
@@ -403,11 +426,18 @@ window.Platform = (function () {
             console.log('[Platform] баннер: площадка сама ужала окно (' +
               beforeSize + 'px -> ' + afterSize + 'px), свой отступ выключен.');
           }
+          if (window.debugLog) {
+            window.debugLog('сужение: ' + beforeSize + '->' + afterSize + 'px, резерв=' +
+              (_platformReservesSpace ? 'площадки' : 'свой'));
+          }
         });
       })
       .catch(function (e) {
         console.warn('[Platform] баннер недоступен:', e);
-        if (window.debugLog) window.debugLog('showBannerAd: мост ОТВЕТИЛ ошибкой/недоступен: ' + (function () { try { return JSON.stringify(e); } catch (je) { return String(e); } })());
+        if (window.debugLog) window.debugLog('showBannerAd: мост ОТВЕТИЛ ошибкой/недоступен: ' + jsonForLog(e));
+        if (!isRetry) {
+          setTimeout(function () { showBannerAd(true); }, BANNER_RETRY_DELAY_MS);
+        }
       });
   }
 
@@ -597,6 +627,40 @@ window.Platform = (function () {
       });
   }
 
+  /* ---------- Шеринг картинки в историю (ТЗ №51) ----------
+     Контракт общий с platform.js (Яндекс): canShareStory()/shareStory(dataUrl)
+     существуют на ОБЕИХ площадках (main.js вызывает canShareStory()
+     безусловно, без typeof-гарда) — на Яндексе canShareStory() всегда
+     false, кнопка #btn-share остаётся hidden. supports-гард — тот же
+     приём, что уже используется у track() выше в этом файле. */
+  function canShareStory() {
+    return available && hasBridge() && typeof vkBridge.supports === 'function' &&
+      vkBridge.supports('VKWebAppShowStoryBox');
+  }
+
+  // Возвращает Promise<boolean> — true только при подтверждённой публикации;
+  // все ошибки (в т.ч. отмена показа самим игроком) глотаются здесь и
+  // превращаются в false, main.js по true показывает тост «Опубликовано»,
+  // по false — молчит (отмена не должна выглядеть как сбой).
+  function shareStory(dataUrl) {
+    if (!available || !hasBridge()) return Promise.resolve(false);
+    try {
+      return vkBridge.send('VKWebAppShowStoryBox', {
+        background_type: 'image',
+        blob: dataUrl,
+        attachment: { text: 'open', type: 'url', url: 'https://vk.com/app54676906' },
+      }).then(function () {
+        return true;
+      }).catch(function (e) {
+        console.warn('[Platform] shareStory ошибка/отказ (в т.ч. отмена пользователем):', e);
+        return false;
+      });
+    } catch (e) {
+      console.error('[Platform] shareStory бросил:', e);
+      return Promise.resolve(false);
+    }
+  }
+
   // Покупки за голоса (ЗАДАЧА N, п. «покупки — не делать в этой задаче»):
   // VKWebAppShowOrderBox по официальной механике требует серверный
   // колбэк-скрипт («Адрес обратного вызова» в настройках приложения VK),
@@ -623,6 +687,68 @@ window.Platform = (function () {
   function purchase(productId)          { return Promise.resolve(null); }
   function consumePurchase(purchaseToken) { return Promise.resolve(); }
 
+  /* ---------- КРЮЧКИ ПЛОЩАДКИ (ТЗ №49, п.5) ----------
+     Контракт общий с platform.js (Яндекс) — main.js вызывает эти методы
+     безусловно на обеих сборках. Fire-and-forget: try/catch + .catch,
+     никогда не бросают и не блокируют игру; без моста (dev-режим) —
+     тихий no-op. */
+
+  function promptAddToFavorites() {
+    if (!available) return;
+    try {
+      vkBridge.send('VKWebAppAddToFavorites').catch(function (e) {
+        console.warn('[Platform] AddToFavorites ошибка/отказ:', e);
+      });
+    } catch (e) {
+      console.error('[Platform] promptAddToFavorites бросил:', e);
+    }
+  }
+
+  function promptRecommend() {
+    if (!available) return;
+    try {
+      vkBridge.send('VKWebAppRecommend').catch(function (e) {
+        console.warn('[Platform] Recommend ошибка/отказ:', e);
+      });
+    } catch (e) {
+      console.error('[Platform] promptRecommend бросил:', e);
+    }
+  }
+
+  // У VK Bridge нет аналога API «ярлык на экран»/«запросить отзыв» Яндекс
+  // Игр — no-op, симметрично тому, как platform.js (Яндекс) не умеет
+  // AddToFavorites/Recommend.
+  function promptShortcut() {}
+  function requestReview()  {}
+  function gameplayStart()  {}
+  function gameplayStop()   {}
+
+  // VKWebAppSendCustomEvent — аналитическое событие ВК. Схема полей
+  // (event/screen/type/json/timezone) сверена с постановкой ТЗ №49
+  // («параметры по документации dev.vk.com»), но НЕ подтверждена самой
+  // докой — dev.vk.com недоступен из этой сети (та же оговорка, что уже
+  // была честно сделана про схему VKWebAppCheckBannerAd/Updated выше в
+  // этом файле). vkBridge.supports-гард — единственная защита от вызова
+  // на клиентах, где метода нет; при неверной схеме полей площадка молча
+  // отклонит событие (аналитика необязательна, игру не ломает).
+  function track(name, params) {
+    if (!available || !hasBridge() || typeof vkBridge.supports !== 'function') return;
+    try {
+      if (!vkBridge.supports('VKWebAppSendCustomEvent')) return;
+      vkBridge.send('VKWebAppSendCustomEvent', {
+        event: name,
+        screen: 'game',
+        type: 'game',
+        json: JSON.stringify(params || {}),
+        timezone: -(new Date().getTimezoneOffset()),
+      }).catch(function (e) {
+        console.warn('[Platform] track(' + name + ') ошибка/отказ:', e);
+      });
+    } catch (e) {
+      console.error('[Platform] track бросил:', e);
+    }
+  }
+
   return {
     init: init,
     ready: ready,
@@ -634,10 +760,19 @@ window.Platform = (function () {
     showBannerAd: showBannerAd,
     showInterstitial: showInterstitial,
     showRewarded: showRewarded,
+    canShareStory: canShareStory,
+    shareStory: shareStory,
     getCatalog: getCatalog,
     getPurchases: getPurchases,
     purchase: purchase,
     consumePurchase: consumePurchase,
+    promptAddToFavorites: promptAddToFavorites,
+    promptRecommend: promptRecommend,
+    promptShortcut: promptShortcut,
+    requestReview: requestReview,
+    gameplayStart: gameplayStart,
+    gameplayStop: gameplayStop,
+    track: track,
     paymentsAvailable: false,
     SAVE_SIZE_GUARD_BYTES: VK_SAVE_SIZE_GUARD_BYTES,
   };

@@ -55,6 +55,19 @@ html.theme-streak-rust {
   --accent:    #c1533c;
   --pattern-dot: rgba(93, 45, 35, 0.09);
 }
+/* ТЗ №49: награда за 7-й день лестницы — единственная ТЁМНАЯ гамма студии
+   (--bg тёмный, не «тёплая бумага»), поэтому вместо пересчёта
+   --pattern-dot по формуле «чернила×0.09+бумага×0.91» (та формула
+   предполагает тёмные чернила на светлой бумаге — здесь наоборот) взят
+   белый узор на тёмном фоне той же прозрачности 0.09, тот же приём глазом
+   читается одинаково независимо от того, кто темнее — бумага или чернила. */
+html.theme-night {
+  --bg:        #1c1f26;
+  --ink:       #e8e6df;
+  --ink-light: #a9aab3;
+  --accent:    #8fb0ff;
+  --pattern-dot: rgba(232, 230, 223, 0.08);
+}
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -158,8 +171,14 @@ html, body {
   background: rgba(0, 0, 0, 0.35);
 }
 .ad-loading-overlay[hidden] { display: none; }
-.ad-loading-overlay .loader { border-color: var(--bg); border-top-color: transparent; }
-.ad-loading-text { margin-top: 16px; color: var(--bg); font-size: 0.9rem; text-align: center; padding: 0 24px; }
+/* ТЗ №49: раньше border-color/color брались из var(--bg), полагаясь на то,
+   что --bg ВСЕГДА светлая «бумага» (читаемо на тёмном rgba-скриме ниже).
+   Гамма «Ночь» (theme-night) впервые сделала --bg тёмным — тот же приём
+   слил бы спиннер/текст с чёрным скримом до нечитаемости. Скрим здесь
+   фиксированный rgba(0,0,0,…), НЕ завязан на активную тему вообще —
+   поэтому и его содержимое берёт фиксированный светлый цвет, а не var(--bg). */
+.ad-loading-overlay .loader { border-color: rgba(255, 255, 255, 0.85); border-top-color: transparent; }
+.ad-loading-text { margin-top: 16px; color: #f3ead6; font-size: 0.9rem; text-align: center; padding: 0 24px; }
 
 /* Debug-оверлей (2026-09-06, ?debug=1) — z-index выше .ad-loading-overlay
    (60), чтобы строки лога были видны, даже пока идёт ожидание рекламы.
@@ -336,17 +355,10 @@ html, body {
   .daily-meta { margin-top: 2px; min-height: 22px; }
 }
 
-.cat-card.is-locked {
-  cursor: default;
+.chapter-card.is-locked {
   opacity: 0.55;
 }
-.cat-card.is-locked:active { background: transparent; }
-.cat-card.is-locked .cat-name,
-.cat-card.is-locked:active .cat-name { color: var(--ink); }
-.cat-lock-icon {
-  font-size: 0.8rem;
-  pointer-events: none;
-}
+.chapter-card.is-locked .chapter-head-btn { cursor: pointer; }
 
 /* Всплывающий отклик на выдачу награды (п.2.4) — короткий, ненавязчивый,
    сам прячется, не блокирует ввод (не overlay/модалка). */
@@ -427,14 +439,14 @@ html, body {
   .loader { animation: none; }
 }
 
-/* ---- Экран выбора сложности ---- */
+/* ---- Экран глав («Альбом», ТЗ №50) ---- */
 
-/* Задача K: 5-я карточка категории (catLibrary) больше не гарантированно
-   помещается без скролла на низких экранах (320×568 и меньше) — раньше
-   список из 4 карточек считался «коротким» (см. историю #shop). Тот же
-   приём: список сам не по центру, а сверху, с прокруткой и отступом,
-   чтобы не залезать под back-button. */
-#category {
+/* 13 карточек глав не помещаются без скролла на низких экранах (320×568 и
+   меньше, тем более на высоких — с рядами миниатюр внутри каждой). Тот же
+   приём, что уже был у экрана категорий (Задача K) и у #shop: список сам
+   не по центру, а сверху, с прокруткой и отступом, чтобы не залезать под
+   back-button. */
+#chapters {
   justify-content: flex-start;
   overflow-y: auto;
   padding: 56px 0 24px;
@@ -449,56 +461,124 @@ html, body {
 .cat-screen-title {
   font-size: 1.4rem;
   font-weight: normal;
-  margin-bottom: 4px;
+  margin-bottom: 12px;
   color: var(--ink);
 }
 
-.cat-total {
-  font-size: 0.85rem;
-  color: var(--ink-light);
-  margin-bottom: 24px;
-}
-
-.category-list {
+.chapter-list {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  width: 260px;
+  width: min(320px, 88vw);
 }
 
-.cat-card {
+.chapter-card {
   width: 100%;
-  padding: 16px 20px;
+  padding: 12px 16px 14px;
   border: 2px solid var(--ink);
   border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  position: relative;
+}
+
+.chapter-head-btn {
+  width: 100%;
+  padding: 0;
+  border: none;
   background: transparent;
   cursor: pointer;
   font-family: inherit;
   text-align: left;
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  transition: background 0.12s, color 0.12s;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
 }
-.cat-card:active { background: var(--ink); }
 
-.cat-name {
-  font-size: 1rem;
+.chapter-name {
+  font-size: 0.95rem;
   color: var(--ink);
   pointer-events: none;
 }
-.cat-card:active .cat-name { color: var(--bg); }
 
-.cat-progress {
+.chapter-progress {
   font-size: 0.8rem;
   color: var(--ink-light);
   pointer-events: none;
+  flex-shrink: 0;
 }
-.cat-card:active .cat-progress { color: var(--bg); }
-.cat-progress.is-done { color: var(--accent); }
+.chapter-progress.is-done { color: var(--accent); }
 
-.cat-howto-btn {
-  margin-top: 6px;
+.postcard-badge {
+  font-size: 0.85rem;
+  margin-left: 4px;
+}
+
+.chapter-locked-line {
+  font-size: 0.78rem;
+  color: var(--ink-light);
+  line-height: 1.4;
+}
+
+.chapters-ahead {
+  margin-top: 12px;
+  font-size: 0.82rem;
+  color: var(--ink-light);
+  text-align: center;
+}
+
+.chapter-thumbs {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 4px;
+}
+/* 568×320 и уже — два ряда по 5 (ТЗ №50, п.4). */
+@media (max-width: 400px) {
+  .chapter-thumbs { grid-template-columns: repeat(5, 1fr); }
+}
+
+.thumb {
+  aspect-ratio: 1;
+  border: 1.5px solid var(--ink-light);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px;
+  min-width: 0;
+}
+.thumb-canvas {
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  display: block;
+}
+.thumb-num {
+  font-size: 0.72rem;
+  color: var(--ink-light);
+  pointer-events: none;
+}
+.thumb.is-open {
+  border-color: var(--ink);
+}
+.thumb.is-open .thumb-num { color: var(--ink); }
+.thumb.is-done {
+  border-color: var(--accent);
+}
+.thumb.is-locked {
+  border-style: dashed;
+  cursor: pointer;
+}
+.thumb-dot { opacity: 0.5; }
+
+.chapter-howto-btn {
+  align-self: flex-start;
+  margin-top: -2px;
   font-size: 0.78rem;
   color: var(--ink-light);
   text-decoration: underline;
@@ -701,6 +781,7 @@ html, body {
 /* ---- Онбординг ---- */
 
 .onboarding-card {
+  margin: auto;   /* ТЗ №53: "safe"-центрирование, см. комментарий у .overlay */
   background: var(--bg);
   border: 2px solid var(--ink);
   border-radius: var(--radius);
@@ -729,6 +810,75 @@ html, body {
 .confirm-actions {
   display: flex;
   gap: 12px;
+}
+
+/* ---- ТЗ №49: карточка лестницы 7 дней (#ladder-card, по образцу
+   .onboarding-card) ---- */
+.ladder-card-inner {
+  max-width: 300px;
+}
+.ladder-card-day {
+  font-size: 0.85rem;
+  color: var(--ink-light);
+  text-align: center;
+  margin-top: -6px;
+}
+.ladder-strip {
+  display: flex;
+  gap: 4px;
+  width: 100%;
+}
+.ladder-cell {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 2px;
+  border: 1.5px solid var(--ink-light);
+  border-radius: 4px;
+  color: var(--ink-light);
+}
+.ladder-cell-num { font-size: 0.66rem; line-height: 1; }
+.ladder-cell-icon { font-size: 0.8rem; line-height: 1; }
+.ladder-cell.is-done {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.ladder-cell.is-current {
+  border-color: var(--ink);
+  color: var(--ink);
+  font-weight: bold;
+}
+
+/* ТЗ №53: обёртка правой колонки .win-card. display:contents на обычных
+   высотах — не влияет на раскладку (дети остаются прямыми flex-item'ами
+   .win-card, gap/центрирование как раньше); на @media(max-height:400px)
+   ниже становится собственной flex-колонкой для раскладки в два столбца. */
+.win-card-right { display: contents; }
+
+/* ---- ТЗ №49: тизер завтрашней картинки дня (экран победы) ---- */
+.win-tomorrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.win-tomorrow-canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  border: 1.5px solid var(--ink-light);
+  border-radius: 3px;
+  display: block;
+}
+.win-tomorrow-canvas.is-blurred {
+  filter: blur(3px);
+}
+.win-tomorrow-label {
+  font-size: 0.72rem;
+  color: var(--ink-light);
+  text-align: center;
 }
 
 /* Наглядный пример «3 1» */
@@ -765,16 +915,30 @@ html, body {
   position: absolute;
   inset: 0;
   display: flex;
-  align-items: center;
   justify-content: center;
   background: rgba(43, 39, 35, 0.65);
   z-index: 10;
+  /* ТЗ №53: align-items:center снят намеренно — при переполнении (карточка
+     выше вьюпорта) он центрирует flex-item симметрично ОБОИМИ краями за
+     контейнер (flexbug #12), клетка обрезается и сверху, и снизу, и
+     прокрутка не может её достать ни с одной стороны. Вместо этого
+     карточки получили margin:auto (см. .win-card/.onboarding-card) —
+     "safe"-центрирование: при избытке места ведёт себя как раньше
+     (центр), при нехватке карточка прижимается к верхнему краю и
+     становится доступна прокруткой (overflow-y:auto ниже) целиком. #app
+     выше держит touch-action:none, здесь явно возвращён pan-y — иначе
+     тач-прокрутка оверлея невозможна. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding: 8px 0;
 }
 .overlay[hidden] { display: none; }
 
 .win-card {
   position: relative;
   z-index: 2;
+  margin: auto;   /* ТЗ №53: "safe"-центрирование, см. комментарий у .overlay */
   background: var(--bg);
   border: 2px solid var(--ink);
   border-radius: var(--radius);
@@ -811,6 +975,36 @@ html, body {
   letter-spacing: 0.06em;
 }
 
+/* ТЗ №53: на ВК (карточка ~340px, «Дальше» + «Поделиться» видны) кнопки
+   встают в один ряд вместо двух — экономит ~50px высоты; на Яндексе
+   (одна кнопка) выглядит как раньше. */
+.win-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+/* ТЗ №50: «Картинка {k} из 10 · глава «{name}»» — под названием картинки. */
+.win-chapter-line {
+  font-size: 0.8rem;
+  color: var(--ink-light);
+  margin-top: -8px;
+}
+
+/* Награда за главу — тем же каркасом, что #onboarding-overlay/.onboarding-card. */
+.chapter-done-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.chapter-done-reward {
+  font-size: 1rem;
+  color: var(--accent);
+  font-weight: bold;
+}
+
 /* Конфетти */
 .confetti-container {
   position: absolute;
@@ -832,6 +1026,41 @@ html, body {
 @media (prefers-reduced-motion: reduce) {
   .win-card { animation: none; }
   .confetti-piece { display: none; }
+}
+
+/* ТЗ №53: карточка победы обязана влезать в вьюпорт с полем ≥8px
+   сверху/снизу (см. .overlay/margin:auto выше) — диагноз: на ВК-десктоп
+   iframe ~1000×600 карточка (654px при полном наборе — «Поделиться» +
+   тизер) не помещалась в 600px, .overlay резал её с обоих краёв. Блок
+   намеренно стоит ПОСЛЕ базового .win-card (выше) — при равной
+   специфичности источник-порядок решает каскад, а не порядок @media. */
+@media (max-height: 640px) {
+  .win-card { padding: 16px 20px; gap: 10px; }
+  .silhouette-mount { padding: 10px; }
+  .win-theme { font-size: 1rem; }
+  .win-chapter-line { margin-top: -4px; }
+  /* Тизер и так размыт (is-blurred) — нецелое CSS-масштабирование не видно. */
+  .win-tomorrow-canvas { max-height: 56px; width: auto; }
+  .win-tomorrow-label { font-size: 0.68rem; }
+}
+
+/* ТЗ №49, Р7 (ТЗ №26): 568×320 — карточка лестницы и тизер обязаны влезать
+   целиком, ничего не прятать (тот же приём, что уже применён к меню выше).
+   ТЗ №53: на этой же высоте компактная вертикальная раскладка (блок 640px
+   выше) карточке победы всё ещё не хватает — уходит в две колонки:
+   силуэт слева, .win-card-right (название/глава/кнопки/тизер) справа;
+   тизер НЕ прячется (крючок удержания ТЗ №49). */
+@media (max-height: 400px) {
+  .onboarding-card { padding: 14px 20px; gap: 8px; }
+  .ladder-card-day { margin-top: -2px; }
+  .win-card {
+    padding: 14px 20px; gap: 8px;
+    flex-direction: row; flex-wrap: wrap; align-items: flex-start;
+    column-gap: 20px;
+  }
+  .win-card-right {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+  }
 }
 
 /* Тумблер режима.
@@ -953,6 +1182,35 @@ html, body {
   pointer-events: none;
 }
 
+/* ТЗ №51: кнопка «Проверить» (#btn-check) — тот же каркас .hint-btn/
+   .hint-icon-wrap/.hint-label/.hint-ad-caption, что и у #btn-hint (см. выше).
+   #check-icon-mark — статичная «✓», видна ВСЕГДА, кроме режима «за
+   рекламу» (main.js::updateCheckButton переключает hidden на этом элементе
+   и на #check-ad-icon зеркально — ровно один из двух виден). Размер 15px —
+   тот же, что у .ad-icon (та же коробка hint-icon-wrap), чтобы кнопка не
+   меняла ширину при переключении режима. */
+.check-icon-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  font-weight: 700;
+  line-height: 1;
+}
+/* ТЗ №51а: атрибут hidden на <svg> браузер не отрабатывает (UA-правило
+   [hidden]{display:none} — только для HTML-элементов), поэтому #check-ad-icon
+   (svg) оставался виден во всех режимах поверх «✓». #check-icon-mark — span,
+   ему UA-правило и так помогает, но правило дублируем на оба явно, той же
+   схемой, что .ad-loading-overlay[hidden]/.retention-rewarded-btn[hidden]
+   (см. ТЗ №12). */
+#check-ad-icon[hidden], #check-icon-mark[hidden] { display: none; }
+/* Подпись-статус (бесплатно/за подсказку/за рекламу) — в отличие от
+   #hint-ad-caption у #btn-hint (видна ТОЛЬКО в режиме рекламы), здесь
+   видна ВСЕГДА — состояние меняется, а не появляется/исчезает целиком
+   (п.2 ТЗ №51). is-visible проставлен статично в index.html. */
+#check-caption { visibility: visible; }
+
 /* ---- Экран календаря ---- */
 
 .cal-back-btn {
@@ -1021,8 +1279,8 @@ html, body {
 /* ---- Экран косметики (Задача E — каркас, Задача I — список гамм) ---- */
 
 /* Список из N карточек может быть выше экрана (320×568 и меньше) —
-   в отличие от короткого .category-list, здесь нужен свой скролл и
-   отступ сверху, чтобы не залезать под back-button (cat-back-btn:
+   тот же приём, что у #chapters (свой скролл, а не по центру), с отступом
+   сверху, чтобы не залезать под back-button (cat-back-btn:
    top 12px + ~36px высоты кнопки). */
 #shop {
   justify-content: flex-start;
