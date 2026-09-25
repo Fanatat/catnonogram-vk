@@ -57,7 +57,20 @@ window.Sound = (function () {
   }
 
   // Задача H: «Ряд закрыт» — одна мягкая нота (синус, не резкая).
-  function lineClosed() { beep(587, 0.16, 'sine', 0.12); }
+  // ТЗ №54: линии, закрытые одна за другой, поднимаются по пентатонике
+  // (ре-ми-соль-ля-си-ре) — серия слышна как серия; пауза сбрасывает лесенку.
+  var COMBO_NOTES = [587, 659, 784, 880, 988, 1175];
+  var COMBO_WINDOW_MS = 1500;
+  var _comboStep = -1;
+  var _comboAt = 0;
+  function lineClosed() {
+    var now = Date.now();
+    _comboStep = (now - _comboAt <= COMBO_WINDOW_MS)
+      ? Math.min(_comboStep + 1, COMBO_NOTES.length - 1)
+      : 0;
+    _comboAt = now;
+    beep(COMBO_NOTES[_comboStep], 0.16, 'sine', 0.12);
+  }
 
   // Задача H: «Клетка» — короткий тик при заливке/крестике/автокрестике.
   function tick() { beep(880, 0.035, 'sine', 0.05); }

@@ -166,6 +166,11 @@
       // ТЗ №50: главы, за которые уже выдана награда (открытка + подсказки)
       // при первом прохождении всех 10 картинок главы — { ch01: true, … }.
       postcards:       {},
+      // 2026-09-25 (решение основателя): главы открываются прогрессом
+      // (7 из 10 в предыдущей), таймер больше не открывает. Здесь — главы,
+      // открытые досрочно за рекламу, { ch05: true, … }; открытые
+      // прогрессом не хранятся, они выводятся из completedLevels.
+      chaptersUnlocked: {},
       // ТЗ №49 (лестница 7 дней, ladder.js). ladderDay/ladderSeries/
       // ladderLastDay — поля ladder.js state как есть (плоские, не нужен
       // отдельный encode/decode — см. ladder.js). ladderClaimedDay —
@@ -275,6 +280,7 @@
     out.posLock = true;
 
     out.postcards = (oldSave.postcards && typeof oldSave.postcards === 'object') ? oldSave.postcards : {};
+    out.chaptersUnlocked = (oldSave.chaptersUnlocked && typeof oldSave.chaptersUnlocked === 'object') ? oldSave.chaptersUnlocked : {};
 
     // ТЗ №49: поля лестницы — обычный сквозной проход валидных значений,
     // отсутствие/битый тип -> дефолт emptySave(). Одноразовая миграция

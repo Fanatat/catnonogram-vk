@@ -51,8 +51,8 @@ window.I18N = (function () {
       shopUnavailable:    'Скоро в продаже',
       shopLoading:        'Загрузка…',
       shopOwned:          'Куплено',
-      shopApply:          'Включить',
-      shopRemove:         'Выключить',
+      shopApply:          'Применить',
+      shopApplied:        '✓ Применено',
       shopBuy:            'Купить',
       shopDefault:        'Бесплатно',
       // ТЗ №01: модуль удержания
@@ -70,27 +70,6 @@ window.I18N = (function () {
       // ТЗ №13, фаза 1: основатель выбрал вариант B из трёх, показанных в
       // ТЗ №12 (docs/reports/2026-08-22_rewarded_cap.md) — вариант A снят.
       catLockedDistance: '{n} {word} до открытия — играйте дальше или откройте роликом',
-      retentionWaitingLine: 'Пазлы ждут: {n}',
-      retentionNextAt:    'ещё +{n} в {time}',
-      // ТЗ №21/22: подпись предела такта раздатчика — показывается ТОЛЬКО
-      // когда backlog реально на потолке (main.js renderRetentionDripLine).
-      // Из трёх вариантов, отснятых кадрами на приёмку (docs/reports/
-      // 2026-08-22_max_label.md), основатель выбрал вариант B (ТЗ №22):
-      // «(макс.)» отмечен в Фазе 0 ТЗ №21 как формально неточный (rewarded
-      // не ограничен потолком и может увеличить это же число прямо в этом
-      // состоянии); «на паузе» — ближе к правде, не обещает неподвижность.
-      retentionAtCapSuffix: ' · накопление на паузе',
-      retentionEmptyLine: '+{n} {word} {verb} в {time}',
-      retentionFull:      'Пазлы ждут — играйте!',
-      // ТЗ (RV-маркер, Яндекс 4.5.1, замечание модерации 2026-09-06): подпись
-      // должна прямо сказать «реклама», иначе кнопка не проходит п.4.5.1 —
-      // на неё нет замены смыслом «плати временем/действием», только рекламой.
-      retentionRewardedBtn: 'Смотреть рекламу: +{n} пазлов 🎁',
-      puzzleWordOne:      'пазл',
-      puzzleWordFew:      'пазла',
-      puzzleWordMany:     'пазлов',
-      puzzleArriveVerbOne: 'появится',
-      puzzleArriveVerbMany: 'появятся',
       // ТЗ №26, Р5 (25.08): встаёт над .daily-meta на Яндексе (streakLabel,
       // выше) — без слова «серия» и без числового склонения. Текст
       // буквально из решения основателя.
@@ -99,7 +78,6 @@ window.I18N = (function () {
       // подсказки»; {word} склоняется в main.js::retentionRewardHintsText().
       retentionRewardHints:'+{n} {word} — серия дней!',
       retentionRewardStyle:'Новый стиль открыт — серия входов!',
-      retentionRewardDrip: 'Открыт новый пазл!',
       // ТЗ №49: лестница 7 дней (ladder.js) — карточка #ladder-card,
       // #series-line на месте старого #retention-streak-line (Р5-развод
       // «серий» ТЗ №26 остаётся: streakLabel — отдельная механика daily).
@@ -114,9 +92,6 @@ window.I18N = (function () {
       rewardHintsMany: 'подсказок',
       rewardStyleRust:  'стиль «Терракота»',
       rewardStyleNight: 'стиль «Ночь»',
-      rewardDrip:       '+{n} пазлов',
-      // ТЗ №49а: {word} склоняется тем же приёмом через puzzleWordOne/Few/Many.
-      retentionRewardDripN: '+{n} {word} открыто — серия дней!',
       winTomorrow: 'Завтра — новая картинка дня',
       cosmeticNightName: 'Ночь',
       cross:    'Крест',
@@ -212,14 +187,18 @@ window.I18N = (function () {
       // ТЗ №50: экран глав («Альбом»).
       albumTitle:      'Альбом',
       chapterProgress: '{k} из 10',
-      chapterLocked:   'Откроется через {n} {word}',
-      chapterLockedDrip: '+{n} в {time}',
-      chapterLockedAd:   'или за ролик',
+      // 2026-09-25: глава открывается прогрессом (7 из 10 в предыдущей)
+      // или сразу за рекламу — строка называет ровно это условие.
+      chapterLocked:   'Решите ещё {n} {word} в главе {k}, чтобы открыть',
+      pictureWordOne:  'картинку',
+      pictureWordFew:  'картинки',
+      pictureWordMany: 'картинок',
+      chapterUnlockAdBtn:   'Смотреть рекламу: открыть сейчас',
+      chapterUnlockedToast: 'Глава «{name}» открыта!',
       winChapterLine:  'Картинка {k} из 10 · глава «{name}»',
       chapterDoneTitle:  'Глава «{name}» собрана!',
       chapterDoneReward: '+3 подсказки',
       postcardLabel:     'Открытка',
-      thumbLockedToast:  'Картинка ещё заперта — играйте дальше',
       // ТЗ №52: строка «Впереди ещё N глав» под списком глав.
       chaptersAhead:     'Впереди ещё {n} {word}',
       chapterWordOne:    'глава',
@@ -284,8 +263,8 @@ window.I18N = (function () {
       shopUnavailable:    'Coming soon',
       shopLoading:        'Loading…',
       shopOwned:          'Owned',
-      shopApply:          'Enable',
-      shopRemove:         'Disable',
+      shopApply:          'Apply',
+      shopApplied:        '✓ Applied',
       shopBuy:            'Buy',
       shopDefault:        'Free',
       // ТЗ №01: retention module
@@ -297,23 +276,9 @@ window.I18N = (function () {
       // дословно — «до открытия» = «until unlock», «роликом» = «with a
       // video», сохранён порядок «сначала число, потом оба пути»).
       catLockedDistance: '{n} {word} until unlock — keep playing, or unlock it with a video',
-      retentionWaitingLine: 'Puzzles waiting: {n}',
-      retentionNextAt:    'plus {n} more at {time}',
-      // ТЗ №22: EN-эквивалент варианта B (см. комментарий у RU-ключа) —
-      // передан смысл «прирост по таймеру приостановлен», не дословно.
-      retentionAtCapSuffix: ' · accumulation paused',
-      retentionEmptyLine: '+{n} {word} {verb} at {time}',
-      retentionFull:      'Puzzles are waiting — go play!',
-      retentionRewardedBtn: 'Watch ad: +{n} puzzles 🎁',
-      puzzleWordOne:      'puzzle',
-      puzzleWordFew:      'puzzles',
-      puzzleWordMany:     'puzzles',
-      puzzleArriveVerbOne: 'arrives',
-      puzzleArriveVerbMany: 'arrive',
       retentionStreakLine:'Login streak: {n}',
       retentionRewardHints:'+{n} {word} — daily streak!',
       retentionRewardStyle:'New style unlocked — login streak!',
-      retentionRewardDrip: 'A new puzzle unlocked!',
       ladderTitle:    'Streak: {n} d.',
       ladderDay:      'Day {d} of 7',
       ladderToday:    'Today: {r}',
@@ -325,8 +290,6 @@ window.I18N = (function () {
       rewardHintsMany: 'hints',
       rewardStyleRust:  'Terracotta style',
       rewardStyleNight: 'Night style',
-      rewardDrip:       '+{n} puzzles',
-      retentionRewardDripN: '+{n} {word} unlocked — login streak!',
       winTomorrow: "Tomorrow — a new daily picture",
       cosmeticNightName: 'Night',
       cross:    'Cross',
@@ -422,14 +385,16 @@ window.I18N = (function () {
       // ТЗ №50: chapters screen («Album»).
       albumTitle:      'Album',
       chapterProgress: '{k} of 10',
-      chapterLocked:   '{n} {word} until unlock',
-      chapterLockedDrip: '+{n} at {time}',
-      chapterLockedAd:   'or via a video',
+      chapterLocked:   'Solve {n} more {word} in chapter {k} to unlock',
+      pictureWordOne:  'picture',
+      pictureWordFew:  'pictures',
+      pictureWordMany: 'pictures',
+      chapterUnlockAdBtn:   'Watch ad: unlock now',
+      chapterUnlockedToast: 'Chapter “{name}” unlocked!',
       winChapterLine:  'Picture {k} of 10 · chapter “{name}”',
       chapterDoneTitle:  'Chapter “{name}” complete!',
       chapterDoneReward: '+3 hints',
       postcardLabel:     'Postcard',
-      thumbLockedToast:  'This picture is still locked — keep playing',
       // ТЗ №52: "N more chapters ahead" line below the chapter list.
       chaptersAhead:     '{n} more {word} ahead',
       chapterWordOne:    'chapter',

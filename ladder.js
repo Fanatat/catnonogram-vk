@@ -29,9 +29,12 @@
     { hints: 2 },
     { style: 'cosmetic_streak_rust', fallbackHints: 2 },
     { hints: 3 },
-    { drip: 6 },
+    // 2026-09-25: дни 5 и 7 давали «дневной запас» (+6 пазлов раздатчику).
+    // Главы теперь открываются прогрессом, таймера нет — запас заменён
+    // подсказками (решение основателя «только прогресс, без таймера»).
+    { hints: 5 },
     { hints: 3 },
-    { style: 'cosmetic_night', drip: 6, fallbackHints: 3 },
+    { style: 'cosmetic_night', hints: 3, fallbackHints: 3 },
   ];
 
   // 'YYYY-M-D' → мс фиксированного (но произвольного) момента этой
@@ -82,16 +85,15 @@
     };
   }
 
-  // { hints, style, drip } для дня 1..7. Если день дал бы стиль, которым
+  // { hints, style } для дня 1..7. Если день дал бы стиль, которым
   // игрок уже владеет (косметика не отбирается и не дублируется) —
   // подставляется fallbackHints вместо стиля (день не остаётся пустым).
-  // Один день теоретически может нести И стиль, И пазлы разом (день 7) —
-  // вызывающий (main.js) обязан уметь показать оба одновременно, отдельного
-  // приоритета здесь не задано.
+  // День 7 несёт И стиль, И подсказки разом — вызывающий (main.js) обязан
+  // уметь показать оба одновременно.
   function rewardFor(day, ownedStyles) {
     var entry = LADDER[day - 1];
-    if (!entry) return { hints: 0, style: null, drip: 0 };
-    var out = { hints: entry.hints || 0, style: null, drip: entry.drip || 0 };
+    if (!entry) return { hints: 0, style: null };
+    var out = { hints: entry.hints || 0, style: null };
     if (entry.style) {
       if (ownedStyles && ownedStyles[entry.style]) {
         out.hints += (entry.fallbackHints || 0);

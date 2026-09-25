@@ -19,6 +19,16 @@ window.Nonogram = (function () {
   var _paused     = false;   // true во время рекламы — блокирует ввод
   var _strokeSnapshot = null; // снимок доски в начале штриха для отмены при pinch
 
+  // ТЗ №54: DOM-кэш поля — renderCell/подсказки зовутся на каждый ход и
+  // каждый авто-крестик, querySelector по атрибутам на 15×15 — лишняя работа.
+  var _cellEls    = [];      // [r][c] → .grid-cell
+  var _rowClueEls = [];      // [r]    → .row-clue
+  var _colClueEls = [];      // [c]    → .col-clue
+  var LINE_FLASH_STEP_MS = 28;
+  var LINE_FLASH_MS      = 360;
+  var WIN_WAVE_STEP_MS   = 22;
+  var WIN_WAVE_MAX_MS    = 480;
+
   // ---- Зум / пан ----
   // Зум меняет РЕАЛЬНЫЙ размер клетки (--cell) и перекладку, а не CSS-
   // scale() поверх готовой картинки — иначе GPU-слой (will-change:transform)
@@ -314,8 +324,12 @@ window.Nonogram = (function () {
   }
 
   /* ---- Обновление DOM одной клетки ---- */
+  function cellEl(r, c) {
+    return (_cellEls[r] && _cellEls[r][c]) || null;
+  }
+
   function renderCell(r, c) {
-    var el = document.querySelector('.grid-cell[data-r="' + r + '"][data-c="' + c + '"]');
+    var el = cellEl(r, c);
     if (!el) return;
     var s = _boardState[r][c];
     el.classList.toggle('is-filled', s === 1);
@@ -348,21 +362,65 @@ window.Nonogram = (function () {
   // silent=true — используется при массовом пересчёте (restore/clear/undo),
   // чтобы звук «ряд закрыт» не играл за уже существующий прогресс.
   function updateRowClueFade(r, silent) {
-    var el = document.querySelector('.row-clue[data-row="' + r + '"]');
+    var el = _rowClueEls[r];
     if (!el) return;
     var wasClosed = el.classList.contains('is-closed');
     var closed = isRowClosed(r);
     el.classList.toggle('is-closed', closed);
-    if (!silent && closed && !wasClosed && _onLineClosed) _onLineClosed();
+    if (!silent && closed && !wasClosed) onLineJustClosed('row', r);
   }
 
   function updateColClueFade(c, silent) {
-    var el = document.querySelector('.col-clue[data-col="' + c + '"]');
+    var el = _colClueEls[c];
     if (!el) return;
     var wasClosed = el.classList.contains('is-closed');
     var closed = isColClosed(c);
     el.classList.toggle('is-closed', closed);
-    if (!silent && closed && !wasClosed && _onLineClosed) _onLineClosed();
+    if (!silent && closed && !wasClosed) onLineJustClosed('col', c);
+  }
+
+  // ТЗ №54: закрытая линия пробегает волной от подсказки к краю поля —
+  // раньше отклик был только в бледнеющих цифрах. Таймаут, а не
+  // animationend — см. комментарий у shakeCell.
+  function onLineJustClosed(kind, idx) {
+    if (_onLineClosed) _onLineClosed();
+    var n = (kind === 'row') ? _level.width : _level.height;
+    var cells = [];
+    for (var i = 0; i < n; i++) {
+      var el = (kind === 'row') ? cellEl(idx, i) : cellEl(i, idx);
+      if (!el) continue;
+      el.classList.remove('is-line-flash');
+      el.style.setProperty('--flash-d', (i * LINE_FLASH_STEP_MS) + 'ms');
+      cells.push(el);
+    }
+    // reflow, чтобы повторная вспышка той же клетки (строка, затем столбец)
+    // перезапустила анимацию, а не слилась с текущей.
+    if (cells.length) void cells[0].offsetWidth;
+    cells.forEach(function (el) { el.classList.add('is-line-flash'); });
+    setTimeout(function () {
+      cells.forEach(function (el) { el.classList.remove('is-line-flash'); });
+    }, LINE_FLASH_MS + n * LINE_FLASH_STEP_MS);
+  }
+
+  // ТЗ №54: финал картинки — диагональная волна по всему полю. main.js
+  // показывает экран победы с задержкой, чтобы волна успела сыграть.
+  function playWinWave() {
+    if (!_level) return;
+    for (var r = 0; r < _level.height; r++) {
+      for (var c = 0; c < _level.width; c++) {
+        var el = cellEl(r, c);
+        if (!el) continue;
+        el.classList.remove('is-line-flash');
+        el.style.setProperty('--wave-d', Math.min((r + c) * WIN_WAVE_STEP_MS, WIN_WAVE_MAX_MS) + 'ms');
+        el.classList.add('is-win-wave');
+      }
+    }
+  }
+
+  function markWon() {
+    _won = true;
+    playWinWave();
+    if (_onWin) _onWin();
   }
 
   // Точечное обновление одной строки/столбца — вызывается на каждый ход.
@@ -544,10 +602,7 @@ window.Nonogram = (function () {
 
   function tryWin() {
     if (_won) return;
-    if (checkWin(_boardState, _level.solution)) {
-      _won = true;
-      if (_onWin) _onWin();
-    }
+    if (checkWin(_boardState, _level.solution)) markWon();
   }
 
   function onPointerDown(e) {
@@ -649,12 +704,15 @@ window.Nonogram = (function () {
     corner.className = 'puzzle-tl';
     puzzle.appendChild(corner);
 
+    _cellEls = []; _rowClueEls = []; _colClueEls = [];
+
     var colArea = document.createElement('div');
     colArea.className = 'puzzle-col-clues';
     for (var c = 0; c < W; c++) {
       var ccDiv = document.createElement('div');
       ccDiv.className = 'col-clue';
       ccDiv.dataset.col = c;
+      _colClueEls[c] = ccDiv;
       for (var i = 0; i < clues.cols[c].length; i++) {
         var sp = document.createElement('span');
         sp.textContent = clues.cols[c][i];
@@ -670,6 +728,7 @@ window.Nonogram = (function () {
       var rcDiv = document.createElement('div');
       rcDiv.className = 'row-clue';
       rcDiv.dataset.row = r;
+      _rowClueEls[r] = rcDiv;
       for (var j = 0; j < clues.rows[r].length; j++) {
         var sp2 = document.createElement('span');
         sp2.textContent = clues.rows[r][j];
@@ -684,12 +743,14 @@ window.Nonogram = (function () {
     for (var r2 = 0; r2 < H; r2++) {
       var rowEl = document.createElement('div');
       rowEl.className = 'grid-row';
+      _cellEls[r2] = [];
       for (var c2 = 0; c2 < W; c2++) {
-        var cellEl = document.createElement('div');
-        cellEl.className = 'grid-cell';
-        cellEl.dataset.r = r2;
-        cellEl.dataset.c = c2;
-        rowEl.appendChild(cellEl);
+        var cellDiv = document.createElement('div');
+        cellDiv.className = 'grid-cell';
+        cellDiv.dataset.r = r2;
+        cellDiv.dataset.c = c2;
+        rowEl.appendChild(cellDiv);
+        _cellEls[r2][c2] = cellDiv;
       }
       gridEl.appendChild(rowEl);
     }
@@ -760,16 +821,13 @@ window.Nonogram = (function () {
     if (_onMove) _onMove();
     autoFillCrosses(hint.r, hint.c);
     updateClueFade(hint.r, hint.c);
-    if (checkWin(_boardState, _level.solution)) {
-      _won = true;
-      if (_onWin) _onWin();
-    }
+    if (checkWin(_boardState, _level.solution)) markWon();
   }
 
   // Таймаут, а не 'animationend' — под prefers-reduced-motion анимация не
   // играет и событие не пришло бы, класс завис бы навсегда.
   function shakeCell(r, c) {
-    var el = document.querySelector('.grid-cell[data-r="' + r + '"][data-c="' + c + '"]');
+    var el = cellEl(r, c);
     if (!el) return;
     el.classList.add('is-shake');
     setTimeout(function () { el.classList.remove('is-shake'); }, 150);
@@ -843,14 +901,12 @@ window.Nonogram = (function () {
       updateClueFade(r, c);
     }
     if (errors.length && _onMove) _onMove();
-    if (checkWin(_boardState, _level.solution)) {
-      _won = true;
-      if (_onWin) _onWin();
-    }
+    if (checkWin(_boardState, _level.solution)) markWon();
     return errors.length;
   }
 
   function setPaused(v) { _paused = !!v; }
+  function isWon() { return _won; }
 
   function getBoardState() {
     // Возвращает плоский снимок для сохранения: [[0,1,2,...],...]
@@ -882,6 +938,7 @@ window.Nonogram = (function () {
     applyHint:     applyHint,
     clearBoard:    clearBoard,
     setPaused:     setPaused,
+    isWon:         isWon,
     getBoardState: getBoardState,
     restoreBoard:  restoreBoard,
     resetZoom:     resetZoom,

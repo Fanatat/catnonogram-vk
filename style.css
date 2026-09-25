@@ -298,10 +298,10 @@ html, body {
   line-height: 1.3;
 }
 #retention-streak-line { margin-top: 6px; }
-#retention-drip-line   { margin-bottom: 8px; }
 
-/* ТЗ №09, фаза 3 — rewarded «Открыть ещё +N», рядом со строкой раздатчика.
-   Меньше и тише основной кнопки «Играть» — вторична по иерархии. */
+/* Rewarded-кнопка «открыть сейчас» на карточке запертой главы (2026-09-25;
+   до того — «Открыть ещё +N» под заголовком альбома, ТЗ №09). Меньше и
+   тише основной кнопки «Играть» — вторична по иерархии. */
 .retention-rewarded-btn {
   display: block;
   margin: 0 auto 16px;
@@ -355,10 +355,16 @@ html, body {
   .daily-meta { margin-top: 2px; min-height: 22px; }
 }
 
-.chapter-card.is-locked {
+/* Запертая глава приглушена, кроме кнопки «открыть сейчас» — она
+   действующая, не должна выглядеть неактивной. */
+.chapter-card.is-locked > :not(.chapter-unlock-btn) {
   opacity: 0.55;
 }
 .chapter-card.is-locked .chapter-head-btn { cursor: pointer; }
+.chapter-card .chapter-unlock-btn {
+  align-self: flex-start;
+  margin: 2px 0 0;
+}
 
 /* Всплывающий отклик на выдачу награды (п.2.4) — короткий, ненавязчивый,
    сам прячется, не блокирует ввод (не overlay/модалка). */
@@ -748,10 +754,55 @@ html, body {
   75%      { transform: translateX(6px); }
 }
 
+/* ТЗ №54: закрытая линия — волна от подсказки к краю поля; финал
+   картинки — диагональная волна по всему полю. Подсветка — отдельным
+   слоем ::before цвета темы (::after занят крестиком), без color-mix —
+   его нет в старых WebView Android. */
+.grid-cell { position: relative; }
+.grid-cell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  opacity: 0;
+  pointer-events: none;
+}
+.grid-cell.is-line-flash::before {
+  animation: cell-glow 360ms ease-out var(--flash-d, 0ms) both;
+}
+.grid-cell.is-line-flash.is-filled {
+  animation: cell-pop 300ms ease-out var(--flash-d, 0ms) both;
+}
+.grid-cell.is-win-wave::before {
+  animation: cell-glow 520ms ease-out var(--wave-d, 0ms) both;
+}
+.grid-cell.is-win-wave.is-filled {
+  animation: cell-pop-big 460ms cubic-bezier(.3, 1.6, .5, 1) var(--wave-d, 0ms) both;
+}
+@keyframes cell-glow {
+  0%   { opacity: 0; }
+  35%  { opacity: 0.38; }
+  100% { opacity: 0; }
+}
+@keyframes cell-pop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(0.8); }
+  100% { transform: scale(1); }
+}
+@keyframes cell-pop-big {
+  0%   { transform: scale(1); }
+  45%  { transform: scale(1.14); }
+  100% { transform: scale(1); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .grid-cell.is-filled,
   .grid-cell.is-cross,
-  .grid-cell.is-shake {
+  .grid-cell.is-shake,
+  .grid-cell.is-line-flash.is-filled,
+  .grid-cell.is-win-wave.is-filled,
+  .grid-cell.is-line-flash::before,
+  .grid-cell.is-win-wave::before {
     animation: none;
   }
   .row-clue.is-closed span,
@@ -1363,6 +1414,14 @@ html, body {
   white-space: normal;
   text-align: center;
   line-height: 1.25;
+}
+/* «✓ Применено» — отметка текущей гаммы, не действие: не должна выглядеть
+   так же, как соседняя «Применить». */
+.shop-item-actions .btn:disabled {
+  background: transparent;
+  color: var(--ink-light);
+  border-color: var(--ink-light);
+  cursor: default;
 }
 .shop-currency-icon {
   height: 0.9em;
