@@ -126,6 +126,12 @@ document.addEventListener('DOMContentLoaded', function () {
   var _dailyBoardDate  = '';   // 'YYYY-M-D', которой принадлежит _dailyBoard
   var _dailySaveTimer  = null;
   var _inDailyGame     = false; // сейчас открыт экран daily-пазла (для флаша при сворачивании)
+  // ТЗ №59 (Н-12): пропущенный день календаря. _dailyPlayKey — день, чей
+  // пазл сейчас на поле ('YYYY-M-D'); _dailyPlayPast — это прошедший день,
+  // а не сегодняшний (победа только отмечает день в календаре).
+  var _dailyPlayKey    = '';
+  var _dailyPlayPast   = false;
+  var _dailyPastBoards = {};  // { 'YYYY-M-D': {w,h,rle,seq} } — черновики пропущенных дней
   var _cosmeticsOwned  = {};  // { productId: true } — куплено навсегда (Задача E)
   var _activeCosmetic  = '';  // id включённой косметики либо '' (дефолтная тема)
 
@@ -159,11 +165,26 @@ document.addEventListener('DOMContentLoaded', function () {
   // ТЗ №49, п.5: { fav, rec, shortcut, review } — какие крючки площадки
   // уже показаны этому игроку, каждый не больше одного раза.
   var _hooksShown = {};
+  // ТЗ №59 (Н-07): { auto, zoom, check } — одноразовые подсказки-тосты,
+  // уже показанные игроку (в сейве, не повторяются после перезагрузки).
+  var _tipsShown = {};
 
   // ТЗ №49, п.5: тайминг текущего пазла для track('puzzle_done', {sec,hints}) —
   // сброс в showGame()/showDailyGame(), считывается в onWin()/onDailyWin().
   var _levelStartedAt     = 0;
   var _hintsUsedThisLevel = 0;
+
+  // ТЗ №57: событийная аналитика (Яндекс Метрика, analytics.js). _aLevel —
+  // текущий вход на картинку { label, startedAt, won, quitSent } (кампания
+  // или пазл дня), null вне уровня. _aNewPlayer — 1, если на этом запуске
+  // у игрока не было сейва, 0 — сейв был, -1 — сейв не прочитался (сбой или
+  // таймаут площадки: новый это игрок или нет — неизвестно). _aReadyAt —
+  // момент gameReady (game_loaded), от него считается first_move.sec. Всё
+  // только в памяти, в сейв не пишется.
+  var _aLevel         = null;
+  var _aNewPlayer     = 0;
+  var _aReadyAt       = 0;
+  var _aFirstMoveSent = false;
 
   // ТЗ №51: кнопка «Проверить» + мягкие тосты. Всё в памяти сессии,
   // НЕ в сейве — бесплатная проверка/тосты «сгорают» при перезагрузке
@@ -285,6 +306,27 @@ document.addEventListener('DOMContentLoaded', function () {
     btn.addEventListener('click', toggleSound);
   });
 
+  // ТЗ №55: звук интерфейса — один делегированный слушатель на все кнопки
+  // вместо звука в каждом обработчике. data-sfx="back" — «назад»/отмена,
+  // "toggle" — переключатели, "none" — у кнопки свой игровой звук
+  // (подсказка, проверка, «Забрать», «Да» очистки, реклама главы).
+  // Кнопку запоминаем на погружении (до её обработчика, который может её
+  // задизейблить), звук — на всплытии: тумблер звука успевает включить
+  // звук и слышен только при включении.
+  var _uiSfxEl = null;
+  document.addEventListener('click', function (e) {
+    var el = e.target && e.target.closest ? e.target.closest('button, [data-sfx]') : null;
+    _uiSfxEl = (el && !el.disabled) ? el : null;
+  }, true);
+  document.addEventListener('click', function () {
+    var el = _uiSfxEl;
+    _uiSfxEl = null;
+    if (!el) return;
+    var kind = el.getAttribute('data-sfx');
+    if (kind === 'none') return;
+    Sound.play(kind === 'back' ? 'uiBack' : (kind === 'toggle' ? 'uiToggle' : 'uiTap'));
+  });
+
   // Тумблер режима — вешаем один раз
   var modeBtns = document.querySelectorAll('.mode-btn');
   modeBtns.forEach(function (btn) {
@@ -328,6 +370,8 @@ document.addEventListener('DOMContentLoaded', function () {
     if (Platform.showBannerAd) Platform.showBannerAd();
 
     Platform.load().then(function (data) {
+      _aNewPlayer = (Platform.loadFailed && Platform.loadFailed()) ? -1
+        : (!data || typeof data !== 'object' || Object.keys(data).length === 0) ? 1 : 0;
       // Миграция/нормализация сейва живёт в save.js — main.js только раскладывает
       // результат по переменным состояния (см. migrate() для деталей формата v1).
       var migrated = Save.migrate(data, LEVELS.length);
@@ -352,6 +396,7 @@ document.addEventListener('DOMContentLoaded', function () {
         claimedDay: migrated.ladderClaimedDay,
       };
       _hooksShown = migrated.hooksShown;
+      _tipsShown  = migrated.tipsShown;
 
       _maxReachedPos = migrated.maxReachedIndex;
       _postcards       = migrated.postcards;
@@ -417,15 +462,26 @@ document.addEventListener('DOMContentLoaded', function () {
 
       // Прогресс daily принадлежит конкретному дню — если день сменился
       // между сеансами, старая недоигранная доска больше не актуальна.
+      // ТЗ №59 (Н-12): недоигранный пазл прошедшего дня этого месяца теперь
+      // можно доиграть из календаря — его доска переезжает в черновики
+      // пропущенных дней, а не пропадает.
+      _dailyPastBoards = migrated.dailyPastBoards;
       if (_dailyBoardDate && _dailyBoardDate !== _todayKey()) {
+        if (!_dailyPastBoards[_dailyBoardDate] && Save.isEncodedBoard(_dailyBoard)) {
+          _dailyPastBoards[_dailyBoardDate] = Save.encodeBoard(Save.decodeBoard(_dailyBoard), 1);
+        }
         _dailyBoard     = null;
         _dailyBoardDate = '';
       }
+      _dailyPastBoards = Save.prunePastDailyBoards(_dailyPastBoards, _todayKey(), _dailyDays);
 
       Sound.setMuted(_muted);
       updateSoundBtns();
       showMenu();
       Platform.ready();
+      // ТЗ №57: скрипт Метрики — строго ПОСЛЕ gameReady площадки; события
+      // до его загрузки ждут в очереди analytics.js.
+      goalGameStart(_ladderAdvance);
       refreshCosmeticOwnership();
 
       // Сейв пишется целиком со всеми полями (правило студии) — сразу фиксируем
@@ -438,6 +494,20 @@ document.addEventListener('DOMContentLoaded', function () {
         if (_currentLevel >= 0) flushBoardSave(_currentLevel);
         if (_inDailyGame)       flushDailySave();
       });
+      // ТЗ №57: игра свёрнута или закрыта посреди картинки — тоже «уход с
+      // уровня без победы» (how: 'hide'; свернул и вернулся — тоже 'hide',
+      // см. goalLevelQuit). Сворачивание — цель уходит при первом hidden,
+      // пока страница жива. Закрытие — pagehide (при закрытии вкладки он
+      // приходит раньше hidden): запрос, начатый в этот момент, переживает
+      // страницу — tag.js шлёт цели sendBeacon'ом, а где sendBeacon у него
+      // выключен (Android WebView) — fetch'ем, которому metrika.html ставит
+      // keepalive. Проверено настоящим закрытием вкладки
+      // (tools/acceptance_analytics.js). Ролик рекламы тоже может свернуть
+      // окно игры — это не уход.
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'hidden' && _rewardedGateOpen) goalLevelQuit(true, 'hide');
+      });
+      window.addEventListener('pagehide', function () { goalLevelQuit(true, 'hide'); });
     });
   });
 
@@ -470,11 +540,24 @@ document.addEventListener('DOMContentLoaded', function () {
       ladderSeries:     _ladderState.series,
       ladderClaimedDay: _ladderState.claimedDay,
       hooksShown:       _hooksShown,
+      tipsShown:        _tipsShown,
+      dailyPastBoards:  _dailyPastBoards,
     };
     // Сторож байтов (ЖЁСТКОЕ ОГРАНИЧЕНИЕ задания): при риске переполнения
     // площадка-специфичного лимита (Platform.SAVE_SIZE_GUARD_BYTES) вытесняет
     // boardStates, никогда прогресс.
-    Platform.save(Save.enforceSizeGuard(payload, Platform.SAVE_SIZE_GUARD_BYTES));
+    // ТЗ №59 (Н-20): вытеснение черновика — редкий случай, игроку тоста нет,
+    // но в debug-панели строка обязательна.
+    var evicted = [];
+    Platform.save(Save.enforceSizeGuard(payload, Platform.SAVE_SIZE_GUARD_BYTES, evicted));
+    evicted.forEach(function (e) {
+      if (String(e.key).indexOf('daily:') === 0) {
+        window.debugLog('save: черновик пазла дня за ' + e.key.slice(6) + ' удалён — сейв не влез в ' + Platform.SAVE_SIZE_GUARD_BYTES + ' байт');
+        return;
+      }
+      window.debugLog('save: черновик картинки №' + levelLabel(+e.key) + ' (индекс ' + e.key + ') удалён — ' +
+        (e.reason === 'bytes' ? 'сейв не влез в ' + Platform.SAVE_SIZE_GUARD_BYTES + ' байт' : 'больше ' + Save.MAX_UNFINISHED_BOARDS + ' черновиков'));
+    });
   }
 
   /* ---- ТЗ №01: модуль удержания — рантайм-обвязка ----
@@ -605,6 +688,115 @@ document.addEventListener('DOMContentLoaded', function () {
     if (Platform.track) Platform.track(name, params);
   }
 
+  /* ---- ТЗ №57: цели Яндекс Метрики (analytics.js) ----
+     Отдельно от trackEvent (тот — кастомные события кабинета ВК). Номер
+     уровня — позиция картинки в порядке глав с 1 (1..130, порядок, в
+     котором игрок их проходит), пазл дня — level: 'daily'. */
+
+  function goal(name, params) {
+    if (typeof Analytics !== 'undefined') Analytics.event(name, params);
+  }
+
+  // K-09: параметры целей тоже считаются под защитой — сбой аналитики
+  // (например, main.js новее закешированного nonogram.js без getMoves) не
+  // должен прервать ход игрока (колбэк хода зовёт goalFirstMove) или победу.
+  function movesNow() {
+    try { return (typeof Nonogram.getMoves === 'function') ? Nonogram.getMoves() : 0; }
+    catch (e) { return 0; }
+  }
+
+  // Раз за запуск, сразу после Platform.ready(): старт Метрики, game_loaded
+  // и return_day — серия уже посчитана (Ladder.advance в цепочке загрузки,
+  // его результат передаётся сюда: переменная живёт только там); reward —
+  // что лестница выдаёт сегодня, если день открылся именно этим запуском.
+  // Каждый шаг под своим try: блок стоит в цепочке загрузки, и сбой здесь
+  // не должен ни оборвать остаток запуска (сохранение, подписки на
+  // сворачивание), ни потерять соседнюю цель.
+  function goalGameStart(ladderAdvance) {
+    try { if (typeof Analytics !== 'undefined') Analytics.start(); } catch (e) { /* аналитика не ломает запуск */ }
+    _aReadyAt = Date.now();
+    try {
+      goal('game_loaded', {
+        load_ms: (window.performance && performance.now) ? Math.round(performance.now()) : 0,
+        new_player: _aNewPlayer,
+      });
+    } catch (e) { /* аналитика не ломает запуск */ }
+    try {
+      goal('return_day', {
+        streak_day: _ladderState.series,
+        reward: (ladderAdvance && ladderAdvance.opened)
+          ? ladderRewardKey(Ladder.rewardFor(_ladderState.day, _cosmeticsOwned)) : 'none',
+      });
+    } catch (e) { /* аналитика не ломает запуск */ }
+  }
+
+  function levelLabel(levelIndex) {
+    var pos = (typeof ChaptersMap !== 'undefined') ? ChaptersMap.indexToPos(levelIndex) : undefined;
+    return (typeof pos === 'number') ? pos + 1 : levelIndex + 1;
+  }
+
+  function goalLevelSec() {
+    return _aLevel ? Math.round((Date.now() - _aLevel.startedAt) / 1000) : 0;
+  }
+
+  function goalLevelEnter(label) {
+    goalLevelQuit(false, 'back'); // прошлый вход без победы и без «Назад» — тоже уход
+    _aLevel = { label: label, startedAt: Date.now(), won: false, quitSent: false };
+    goal('level_start', { level: label });
+  }
+
+  // how — как ушёл: 'back' — внутри игры («Назад», вход на другую
+  // картинку), 'hide' — игру свернули или закрыли посреди картинки (в
+  // т.ч. свернули на минуту и вернулись: в момент сворачивания не знать,
+  // вернётся ли игрок). Одна цель на вход: вернулся после 'hide' и нажал
+  // «Назад» — второго level_quit не будет. Поэтому level_quit — не отток:
+  // отток по картинке = level_start − level_win. keep=true ('hide'): вход
+  // не закрываем — игрок может вернуться (из фона или bfcache) и дорешать,
+  // его level_win дойдёт.
+  function goalLevelQuit(keep, how) {
+    if (_aLevel && !_aLevel.won && !_aLevel.quitSent) {
+      _aLevel.quitSent = true;
+      goal('level_quit', { level: _aLevel.label, sec: goalLevelSec(), how: how });
+    }
+    if (!keep) _aLevel = null;
+  }
+
+  // undos: в игре нет отмены хода — всегда 0 (параметр из ТЗ, для единой
+  // схемы целей по студии).
+  function goalLevelWin() {
+    if (!_aLevel || _aLevel.won) return;
+    _aLevel.won = true;
+    goal('level_win', { level: _aLevel.label, sec: goalLevelSec(), moves: movesNow(), undos: 0 });
+  }
+
+  // Первый ход игрока за запуск — штрих по полю (подсказка/«Проверить» не
+  // ход); sec — от готовности игры (game_loaded), не от входа на уровень:
+  // сколько игрок шёл от загрузки до первого действия.
+  function goalFirstMove() {
+    if (_aFirstMoveSent || !_aLevel || movesNow() < 1) return;
+    _aFirstMoveSent = true;
+    goal('first_move', {
+      level: _aLevel.label,
+      sec: _aReadyAt ? Math.round((Date.now() - _aReadyAt) / 1000) : 0,
+      new_player: _aNewPlayer,
+    });
+  }
+
+  // outcome — второй аргумент onClose адаптера ('reward' | 'closed' | 'error').
+  function goalRewardedResult(place, wasRewarded, outcome) {
+    var result = (outcome === 'reward' || outcome === 'closed' || outcome === 'error')
+      ? outcome : (wasRewarded ? 'reward' : 'closed');
+    goal('rewarded_result', { place: place, result: result });
+  }
+
+  function ladderRewardKey(reward) {
+    if (!reward) return 'none';
+    var parts = [];
+    if (reward.style) parts.push('style');
+    if (reward.hints > 0) parts.push('hints_' + reward.hints);
+    return parts.length ? parts.join('_') : 'none';
+  }
+
   // ТЗ №54: вибрация идёт за тем же переключателем, что и звук — один
   // понятный игроку тумблер «тихо».
   function haptic(kind) {
@@ -627,6 +819,10 @@ document.addEventListener('DOMContentLoaded', function () {
   }
   function cancelWinReveal() {
     if (_winRevealTimer) { clearTimeout(_winRevealTimer); _winRevealTimer = null; }
+    // ТЗ №55: открытка главы и «глава открыта» ждут конца мелодии победы
+    // (queueAfter) — ушёл игрок раньше, они не должны прозвучать на
+    // следующем экране или после рекламы. Уже звучащие доигрывают.
+    Sound.cancelPending(['chapterDone', 'chapterUnlocked']);
   }
 
   // 💡 подсказки / 🎨 стиль (п.2.3). День 7 (стиль ЕЩЁ не куплен И
@@ -717,6 +913,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     var toastText = ladderToastText(reward);
     if (toastText) showRetentionToast(toastText);
+    Sound.play('reward');
 
     _ladderState.claimedDay = _todayKey();
     _ladderPending = false;
@@ -910,7 +1107,8 @@ document.addEventListener('DOMContentLoaded', function () {
   var _levelsSinceInterstitial    = 0;
   var _lastInterstitialAt         = 0;
 
-  function maybeShowInterstitial(onDone) {
+  // level — номер пройденной картинки для interstitial_shown (ТЗ №57).
+  function maybeShowInterstitial(onDone, level) {
     _levelsSinceInterstitial++;
     var due = _levelsSinceInterstitial >= INTERSTITIAL_LEVEL_INTERVAL &&
       (Date.now() - _lastInterstitialAt) >= INTERSTITIAL_COOLDOWN_MS;
@@ -922,7 +1120,8 @@ document.addEventListener('DOMContentLoaded', function () {
     Sound.suspend();
     Nonogram.setPaused(true);
     if (Platform.gameplayStop) Platform.gameplayStop(); // ТЗ №49, п.5: перед interstitial
-    Platform.showInterstitial(function () {
+    Platform.showInterstitial(function (shown) {
+      if (shown) goal('interstitial_shown', { level: level });
       Nonogram.setPaused(false);
       Sound.resume();
       onDone();
@@ -1042,7 +1241,10 @@ document.addEventListener('DOMContentLoaded', function () {
     btnDaily.classList.toggle('is-done', doneToday);
     btnDaily.onclick = function () {
       Sound.resumeContext();
-      showDailyGame();
+      // ТЗ №59 (Н-06): новичок, нажавший «Ежедневный» раньше «Играть»,
+      // получал поле 10×10 без объяснения правил — та же карточка «Как
+      // читать числа», что у «Играть»; пазл дня картинкой №1 не подменяется.
+      openDaily('');
     };
 
     // ТЗ №49, §2.3: «Пазлов подряд» (серия ежедневного режима, отдельная
@@ -1277,6 +1479,7 @@ document.addEventListener('DOMContentLoaded', function () {
             applyCosmetic(_activeCosmetic);
             saveProgress();
             showShop();
+            Sound.play('reward');
           });
         };
       }
@@ -1363,6 +1566,48 @@ document.addEventListener('DOMContentLoaded', function () {
       .replace('{k}', chIdx);
   }
 
+  // ТЗ №59 (Н-09): подпись над полем кампании — «Глава «Тёплый дом» · 4/10»
+  // (решено в главе / 10) и, если следующая глава заперта, вторая строка
+  // «ещё 3 до «В саду»». Название (не число) обрезается многоточием — на
+  // 320 px шапка не ломается. Полный текст — в title/aria-label.
+  function updateLevelLabel(levelIndex) {
+    var el = document.getElementById('game-level-label');
+    el.textContent = '';
+    el.removeAttribute('title');
+    el.removeAttribute('aria-label');
+    var ch = chapterOfIndex(levelIndex);
+    if (!ch) return;
+    var chIdx = CHAPTERS.indexOf(ch);
+    var done = countCompletedInChapter(ch);
+    var next = CHAPTERS[chIdx + 1];
+    var name = I18N.t('levelLabelChapter').replace('{name}', I18N.t(ch.nameKey));
+    var progress = ' · ' + done + '/' + ch.indices.length;
+    el.appendChild(levelLabelLine('', name, progress));
+    var full = name + progress;
+    if (next && !isChapterOpen(chIdx + 1)) {
+      var need = I18N.t('levelLabelNext').replace('{n}', Math.max(1, CHAPTER_UNLOCK_NEED - done)) + ' ';
+      var nextName = I18N.t('levelLabelNextName').replace('{name}', I18N.t(next.nameKey));
+      el.appendChild(levelLabelLine(need, nextName, ''));
+      full += ' · ' + need + nextName;
+    }
+    el.title = full;
+    el.setAttribute('aria-label', full);
+  }
+
+  // Строка подписи: [неизменяемое][название — обрезается][неизменяемое].
+  function levelLabelLine(before, name, after) {
+    var line = document.createElement('span');
+    line.className = 'level-label-line';
+    [[before, 'level-label-fix'], [name, 'level-label-name'], [after, 'level-label-fix']].forEach(function (p) {
+      if (!p[0]) return;
+      var s = document.createElement('span');
+      s.className = p[1];
+      s.textContent = p[0];
+      line.appendChild(s);
+    });
+    return line;
+  }
+
   // Кнопка «Открыть главу сейчас» за rewarded — прямо на карточке запертой
   // главы (замечание основателя 2026-09-25: надпись обещала рекламу, а тап
   // по главе ролик не запускал). Та же обвязка, что у подсказки за рекламу:
@@ -1375,23 +1620,33 @@ document.addEventListener('DOMContentLoaded', function () {
       return;
     }
     Sound.resumeContext();
+    // ТЗ №55: звук на время ролика — на паузе, как у подсказки за рекламу
+    // (до ТЗ №55 здесь паузы не было).
+    Sound.suspend();
     showAdLoadingOverlay();
     lockRewardedGate();
     if (Platform.gameplayStop) Platform.gameplayStop();
     var granted = false;
+    goal('rewarded_click', { place: 'chapter' });
     Platform.showRewarded(function onReward() {
       if (_chaptersUnlocked[ch.key]) return;
       _chaptersUnlocked[ch.key] = true;
       granted = true;
       saveProgress();
       trackEvent('chapter_unlock_ad', { chapter: ch.key });
-    }, function onClose() {
+    }, function onClose(wasRewarded, outcome) {
+      goalRewardedResult('chapter', wasRewarded, outcome);
+      // ad_error — ролика не было (сбой/таймаут площадки), глава выдана
+      // бесплатно по стандарту студии: в доле «открыли рекламой» не считать.
+      if (granted) goal('chapter_open', { chapter: CHAPTERS.indexOf(ch) + 1, via: outcome === 'error' ? 'ad_error' : 'ad' });
       unlockRewardedGate();
       hideAdLoadingOverlay();
+      Sound.resume();
       if (!document.getElementById('chapters').classList.contains('is-active')) return;
       showChapters();
       if (granted) {
         showRetentionToast(I18N.t('chapterUnlockedToast').replace('{name}', I18N.t(ch.nameKey)));
+        Sound.play('chapterUnlocked');
       }
     });
   }
@@ -1431,11 +1686,15 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   }
 
-  // Одна миниатюра ряда главы — kind: 'done' | 'open'.
+  // Одна миниатюра ряда главы — kind: 'done' | 'open' | 'started'.
+  // ТЗ №59 (Н-20): 'started' — есть черновик; номер плюс точка, чтобы игрок
+  // видел, к какой начатой картинке вернуться (раньше не отличалась от
+  // нетронутой).
   function buildThumb(levelIndex, numberInChapter, kind) {
     var btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'thumb is-' + kind;
+    if (kind === 'started') btn.setAttribute('aria-label', I18N.t('thumbStarted').replace('{n}', numberInChapter));
     if (kind === 'done') {
       var canvas = document.createElement('canvas');
       canvas.className = 'thumb-canvas';
@@ -1527,6 +1786,8 @@ document.addEventListener('DOMContentLoaded', function () {
         // innerHTML — значок из adIconHtml() + локализованная строка, обе
         // части фиксированы разработчиком, ввода игрока здесь нет.
         unlockBtn.innerHTML = '<span class="rv-btn-inner">' + adIconHtml() + '<span>' + I18N.t('chapterUnlockAdBtn') + '</span></span>';
+        unlockBtn.setAttribute('data-sfx', 'none'); // дальше — ролик, не тап
+        head.setAttribute('data-sfx', 'none');
         unlockBtn.addEventListener('click', function () { onChapterUnlockAdClick(ch); });
         head.addEventListener('click', function () { onChapterUnlockAdClick(ch); });
         card.appendChild(unlockBtn);
@@ -1545,7 +1806,8 @@ document.addEventListener('DOMContentLoaded', function () {
         // Глава открыта — открыты все её картинки (запертых миниатюр внутри
         // открытой главы при замке по главам не бывает).
         ch.indices.forEach(function (idx, i) {
-          thumbs.appendChild(buildThumb(idx, i + 1, _completedLevels[idx] ? 'done' : 'open'));
+          thumbs.appendChild(buildThumb(idx, i + 1,
+            _completedLevels[idx] ? 'done' : (_boardStates[idx] ? 'started' : 'open')));
         });
         card.appendChild(thumbs);
       }
@@ -1633,23 +1895,79 @@ document.addEventListener('DOMContentLoaded', function () {
       grid.appendChild(empty);
     }
 
+    // ТЗ №59 (Н-12): прошедший нерешённый день месяца (и сегодняшний, если
+    // не решён) — кнопка, открывает пазл того дня. Будущие и решённые дни
+    // не нажимаются.
+    var playable = 0;
     for (var d = 1; d <= daysInMonth; d++) {
       var dayKey = y + '-' + m + '-' + d;
       var cls    = 'cal-day';
       if (_dailyDays[dayKey]) cls += ' done';
       if (dayKey === todayKey) cls += ' today';
-      var cell = document.createElement('div');
+      var canPlay = !_dailyDays[dayKey] && d <= now.getDate();
+      var cell = document.createElement(canPlay ? 'button' : 'div');
+      if (canPlay) {
+        cls += ' playable';
+        if (dayKey !== todayKey) playable++;
+        if (_dailyPastBoards[dayKey]) cls += ' started';
+        cell.type = 'button';
+        cell.setAttribute('aria-label', I18N.t('calPlayDay').replace('{date}', dailyDateLabel(dayKey)));
+        cell.onclick = (function (key) {
+          return function () { openDaily(key === todayKey ? '' : key); };
+        })(dayKey);
+      }
       cell.className = cls;
       cell.textContent = d;
       grid.appendChild(cell);
     }
+    var note = document.getElementById('cal-note');
+    note.textContent = I18N.t('calPastHint');
+    note.hidden = playable === 0;
 
     document.getElementById('btn-back-cal').onclick = function () {
       showMenu();
     };
   }
 
+  // Пазл дня: сегодняшний (dayKey пуст) или пропущенного дня. Новичку —
+  // сперва карточка «Как читать числа» (ТЗ №59, Н-06).
+  function openDaily(dayKey) {
+    if (!_onboardingSeen && !hasSolvedAnything()) showOnboarding(function () { showDailyGame(dayKey); });
+    else showDailyGame(dayKey);
+  }
+
+  // 'YYYY-M-D' -> «12 сентября» / «September 12» (язык интерфейса).
+  function dailyDateLabel(dayKey) {
+    var p = dayKey.split('-');
+    var date = new Date(+p[0], +p[1] - 1, +p[2]);
+    try {
+      return date.toLocaleDateString(document.documentElement.lang || 'ru', { day: 'numeric', month: 'long' });
+    } catch (e) {
+      return p[2] + '.' + (p[1].length < 2 ? '0' : '') + p[1];
+    }
+  }
+
   /* ---- Онбординг ---- */
+
+  // ТЗ №59 (Н-06): ни одной решённой картинки — ни в кампании, ни пазла дня.
+  function hasSolvedAnything() {
+    return Object.keys(_completedLevels).length > 0 || !!_dailyDone || Object.keys(_dailyDays).length > 0;
+  }
+
+  // Строка «Проведи по клеткам» над полем — 4 с или до первого касания поля
+  // (первая картинка кампании; с ТЗ №59 — и пазл дня у новичка).
+  var _levelHintTimer = null;
+  function showLevelHint(show) {
+    var hintEl = document.getElementById('level-hint');
+    if (_levelHintTimer) { clearTimeout(_levelHintTimer); _levelHintTimer = null; }
+    hintEl.hidden = !show;
+    if (!show) return;
+    _levelHintTimer = setTimeout(function () { _levelHintTimer = null; hintEl.hidden = true; }, 4000);
+    document.getElementById('puzzle-container').addEventListener('pointerdown', function () {
+      if (_levelHintTimer) { clearTimeout(_levelHintTimer); _levelHintTimer = null; }
+      hintEl.hidden = true;
+    }, { once: true });
+  }
 
   function showOnboarding(onDone) {
     var overlay = document.getElementById('onboarding-overlay');
@@ -1675,6 +1993,19 @@ document.addEventListener('DOMContentLoaded', function () {
   function persistDailyBoard() {
     if (Nonogram.isWon()) return; // см. persistBoardState
     var board = Nonogram.getBoardState();
+    if (_dailyPlayPast) {
+      // ТЗ №59 (Н-12): пропущенный день — свой черновик, dailyBoard
+      // сегодняшнего пазла не трогаем.
+      if (boardHasMarks(board)) {
+        _dailyPastBoards[_dailyPlayKey] = Save.encodeBoard(board, Date.now());
+        _dailyPastBoards = Save.prunePastDailyBoards(_dailyPastBoards, _todayKey(), _dailyDays);
+        saveProgress();
+      } else if (_dailyPastBoards[_dailyPlayKey]) {
+        delete _dailyPastBoards[_dailyPlayKey];
+        saveProgress();
+      }
+      return;
+    }
     if (boardHasMarks(board)) {
       _dailyBoard     = Save.encodeBoard(board); // единственная daily-доска — без seq, вытеснение тут не нужно
       _dailyBoardDate = _todayKey();
@@ -1708,6 +2039,8 @@ document.addEventListener('DOMContentLoaded', function () {
   function onClearBoardConfirmed() {
     document.getElementById('clear-confirm-overlay').hidden = true;
     Nonogram.clearBoard();
+    Sound.play('clearBoard');
+    if (_aLevel) goal('level_restart', { level: _aLevel.label });
     // ТЗ №51: очистка убирает все ошибки — таймер простоя/непрерывной
     // ошибки должен начаться заново, иначе следующая ошибка унаследует
     // старую метку времени и тост «лишняя клетка» может сработать сразу.
@@ -1717,8 +2050,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (_inDailyGame) {
       if (_dailySaveTimer) { clearTimeout(_dailySaveTimer); _dailySaveTimer = null; }
-      _dailyBoard     = null;
-      _dailyBoardDate = '';
+      if (_dailyPlayPast) {
+        delete _dailyPastBoards[_dailyPlayKey];
+      } else {
+        _dailyBoard     = null;
+        _dailyBoardDate = '';
+      }
       saveProgress();
     } else if (_currentLevel >= 0) {
       if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
@@ -1727,33 +2064,44 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   }
 
-  function showDailyGame() {
+  // pastKey — 'YYYY-M-D' пропущенного дня из календаря (ТЗ №59, Н-12);
+  // пусто — сегодняшний пазл, как раньше.
+  function showDailyGame(pastKey) {
     // ТЗ №01, п.1.5: DAILY_LEVELS не входит в ВК-сборку (build.py,
     // YANDEX_ONLY_FILES) — путь недостижим (кнопка/календарь скрыты
     // build.py), но обращение к необъявленному глобалу было бы
     // ReferenceError, если кнопку когда-нибудь покажут без возврата файла.
     if (typeof DAILY_LEVELS === 'undefined') { showMenu(); return; }
-    var idx   = _dailyIndex();
+    var past  = !!pastKey && pastKey !== _todayKey();
+    var pp    = past ? pastKey.split('-') : null;
+    var idx   = past ? _dailyIndex(new Date(+pp[0], +pp[1] - 1, +pp[2])) : _dailyIndex();
     var level = DAILY_LEVELS[idx];
     if (!level) { showMenu(); return; }
 
     _currentLevel = -1;   // обычное сохранение доски (по levelIndex) сюда не относится
     cancelWinReveal();
-    _inDailyGame  = true;
-    trackEvent('daily_shown');
+    _inDailyGame   = true;
+    _dailyPlayPast = past;
+    _dailyPlayKey  = past ? pastKey : _todayKey();
+    trackEvent('daily_shown', past ? { past: 1 } : undefined);
     if (Platform.gameplayStart) Platform.gameplayStart();
     _levelStartedAt     = Date.now();
     _hintsUsedThisLevel = 0;
+    goalLevelEnter('daily');
     document.getElementById('win-overlay').hidden = true;
     document.getElementById('chapter-done-overlay').hidden = true;
     document.getElementById('win-chapter-line').hidden = true;
     document.getElementById('confetti-container').innerHTML = '';
     var dlabel = I18N.t('dailyLabel');
-    if (_streak > 0) dlabel += '  •  ' + I18N.t('streakLabel').replace('{n}', _streak);
-    document.getElementById('game-level-label').textContent = dlabel;
+    if (past) dlabel += '  •  ' + dailyDateLabel(pastKey);
+    else if (_streak > 0) dlabel += '  •  ' + I18N.t('streakLabel').replace('{n}', _streak);
+    var dlabelEl = document.getElementById('game-level-label');
+    dlabelEl.textContent = dlabel;
+    dlabelEl.removeAttribute('title'); // остались бы от подписи кампании
+    dlabelEl.removeAttribute('aria-label');
     document.getElementById('btn-hint').disabled = false;
     document.getElementById('btn-check').disabled = false;
-    document.getElementById('level-hint').hidden = true;
+    showLevelHint(!hasSolvedAnything());
 
     modeBtns.forEach(function (b) {
       b.classList.toggle('is-active', parseInt(b.dataset.mode, 10) === 1);
@@ -1771,21 +2119,25 @@ document.addEventListener('DOMContentLoaded', function () {
       level,
       document.getElementById('puzzle-container'),
       function () { onDailyWin(level); },
-      function ()  { Sound.tick(); scheduleDailySave(); onBoardMove(); },
+      function (kind) { Sound.cell(kind); scheduleDailySave(); onBoardMove(kind); goalFirstMove(); },
       onLineClosedFx
     );
 
     // Прогресс восстанавливаем, только если он от СЕГОДНЯШНЕГО дня
     // (устаревший при смене дня уже сброшен при загрузке сейва).
-    if (_dailyBoard && _dailyBoardDate === _todayKey()) {
-      Nonogram.restoreBoard(Save.decodeBoardAny(_dailyBoard));
+    var draft = past ? _dailyPastBoards[pastKey]
+      : ((_dailyBoard && _dailyBoardDate === _todayKey()) ? _dailyBoard : null);
+    if (draft) {
+      Nonogram.restoreBoard(Save.decodeBoardAny(draft));
       // Восстановленная доска не проходит через onMove — если в ней уже
       // есть ошибки, отсчёт непрерывной ошибки начинаем со входа в экран,
       // а не с первого НОВОГО хода.
       if (Nonogram.hasErrors()) _errorSince = Date.now();
     }
+    onTipsFieldStart();
 
     document.getElementById('btn-back').onclick = function () {
+      goalLevelQuit(false, 'back');
       cancelWinReveal();
       if (Platform.gameplayStop) Platform.gameplayStop();
       flushDailySave();
@@ -1794,11 +2146,12 @@ document.addEventListener('DOMContentLoaded', function () {
       stopNudgeTimer();
       Nonogram.setPaused(false);
       Nonogram.resetZoom();
-      showMenu();
+      if (past) showCalendar(); else showMenu();
     };
   }
 
   function onDailyWin(level) {
+    goalLevelWin();
     Sound.win();
     haptic('success');
     hideRetentionToast();
@@ -1807,14 +2160,27 @@ document.addEventListener('DOMContentLoaded', function () {
     stopNudgeTimer();
     if (Platform.gameplayStop) Platform.gameplayStop();
     if (_dailySaveTimer) { clearTimeout(_dailySaveTimer); _dailySaveTimer = null; }
-    var today  = _todayKey();
-    _streak    = _calcStreak(today, _dailyDone, _streak);  // ДО обновления _dailyDone
-    _dailyDone = today;
-    _dailyDays[today] = true;
-    _dailyBoard     = null;   // пазл дня пройден — прогресс-черновик больше не нужен
-    _dailyBoardDate = '';
+    var past = _dailyPlayPast;
+    var playKey = _dailyPlayKey;
+    if (past) {
+      // ТЗ №59 (Н-12, решение основателя 28.09): доигранный пропущенный
+      // день только отмечается в календаре — серия пазла дня, лестница
+      // 7 дней и dailyDone не двигаются (иначе серию накручивали бы
+      // задним числом).
+      _dailyDays[playKey] = true;
+      delete _dailyPastBoards[playKey];
+    } else {
+      var today  = _todayKey();
+      _streak    = _calcStreak(today, _dailyDone, _streak);  // ДО обновления _dailyDone
+      _dailyDone = today;
+      _dailyDays[today] = true;
+      _dailyBoard     = null;   // пазл дня пройден — прогресс-черновик больше не нужен
+      _dailyBoardDate = '';
+    }
     saveProgress();
-    trackEvent('daily_done', { sec: Math.round((Date.now() - _levelStartedAt) / 1000), hints: _hintsUsedThisLevel });
+    var doneParams = { sec: Math.round((Date.now() - _levelStartedAt) / 1000), hints: _hintsUsedThisLevel };
+    if (past) doneParams.past = 1;
+    trackEvent('daily_done', doneParams);
 
     scheduleWinReveal(function () {
       buildSilhouette(level);
@@ -1823,13 +2189,14 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('win-overlay').hidden = false;
       launchConfetti();
       if (renderWinTomorrow()) trackEvent('teaser_shown');
-      updateShareButton(level, I18N.t('storyDaily').replace('{date}', storyDailyDateLabel()), -1);
+      updateShareButton(level, I18N.t('storyDaily').replace('{date}', storyDailyDateLabel(past ? playKey : '')), -1);
 
-      document.getElementById('btn-next-level').textContent = I18N.t('backToMenu');
+      // Пропущенный день — обратно в календарь: там видна новая отметка.
+      document.getElementById('btn-next-level').textContent = I18N.t(past ? 'backToCalendar' : 'backToMenu');
       document.getElementById('btn-next-level').onclick = function () {
         _currentLevel = -1;
         _inDailyGame  = false;
-        maybeShowInterstitial(showMenu);
+        maybeShowInterstitial(past ? showCalendar : showMenu, 'daily');
       };
     });
   }
@@ -1862,30 +2229,20 @@ document.addEventListener('DOMContentLoaded', function () {
     if (Platform.gameplayStart) Platform.gameplayStart();
     _levelStartedAt     = Date.now();
     _hintsUsedThisLevel = 0;
+    goalLevelEnter(levelLabel(levelIndex));
 
     document.getElementById('win-overlay').hidden = true;
     document.getElementById('chapter-done-overlay').hidden = true;
     document.getElementById('win-chapter-line').hidden = true;
     document.getElementById('confetti-container').innerHTML = '';
-    // #game-level-label используется и здесь, и в showDailyGame() — для
-    // кампании он пуст (номер/общее число уровня на экране решения не
-    // показываются, см. showChapters для сводки доступных уровней).
-    document.getElementById('game-level-label').textContent = '';
+    // #game-level-label используется и здесь, и в showDailyGame(): у пазла
+    // дня — «Ежедневный пазл · дата», в кампании — глава и прогресс в ней.
+    updateLevelLabel(levelIndex);
     document.getElementById('btn-hint').disabled = false;
     document.getElementById('btn-check').disabled = false;
 
     // Направляющая подсказка — только на первом уровне (index 0)
-    var hintEl = document.getElementById('level-hint');
-    if (levelIndex === 0) {
-      hintEl.hidden = false;
-      var hintTimer = setTimeout(function () { hintEl.hidden = true; }, 4000);
-      document.getElementById('puzzle-container').addEventListener('pointerdown', function () {
-        clearTimeout(hintTimer);
-        hintEl.hidden = true;
-      }, { once: true });
-    } else {
-      hintEl.hidden = true;
-    }
+    showLevelHint(levelIndex === 0);
 
     modeBtns.forEach(function (b) {
       b.classList.toggle('is-active', parseInt(b.dataset.mode, 10) === 1);
@@ -1902,7 +2259,7 @@ document.addEventListener('DOMContentLoaded', function () {
       level,
       document.getElementById('puzzle-container'),
       function () { onWin(level, levelIndex); },
-      function ()  { Sound.tick(); scheduleBoardSave(levelIndex); onBoardMove(); },
+      function (kind) { Sound.cell(kind); scheduleBoardSave(levelIndex); onBoardMove(kind); goalFirstMove(); },
       onLineClosedFx
     );
 
@@ -1911,8 +2268,10 @@ document.addEventListener('DOMContentLoaded', function () {
       // См. комментарий у аналогичного restoreBoard в showDailyGame().
       if (Nonogram.hasErrors()) _errorSince = Date.now();
     }
+    onTipsFieldStart();
 
     document.getElementById('btn-back').onclick = function () {
+      goalLevelQuit(false, 'back');
       cancelWinReveal();
       if (Platform.gameplayStop) Platform.gameplayStop();
       flushBoardSave(levelIndex);
@@ -1927,6 +2286,7 @@ document.addEventListener('DOMContentLoaded', function () {
   /* ---- Победа ---- */
 
   function onWin(level, levelIndex) {
+    goalLevelWin();
     Sound.win();
     haptic('success');
     hideRetentionToast();
@@ -1942,6 +2302,7 @@ document.addEventListener('DOMContentLoaded', function () {
     var winChIdx = CHAPTERS.indexOf(chapterOfIndex(levelIndex));
     var nextChWasOpen = winChIdx >= 0 && isChapterOpen(winChIdx + 1);
     _completedLevels[levelIndex] = true;
+    updateLevelLabel(levelIndex); // «4/10» -> «5/10» под экраном победы
     var completedCount = Object.keys(_completedLevels).length;
     var unlockedChapter = (winChIdx >= 0 && !nextChWasOpen && isChapterOpen(winChIdx + 1)) ? CHAPTERS[winChIdx + 1] : null;
 
@@ -1984,11 +2345,14 @@ document.addEventListener('DOMContentLoaded', function () {
       hints: _hintsUsedThisLevel,
     });
     if (chapterJustCompleted) trackEvent('chapter_done', { ch: chapter.key });
+    // ТЗ №57, своя цель: стена главы пройдена прогрессом (7 из 10).
+    if (unlockedChapter) goal('chapter_open', { chapter: CHAPTERS.indexOf(unlockedChapter) + 1, via: 'progress' });
 
     scheduleWinReveal(function () {
       revealWin(level, levelIndex, chapter, posInChapter, nextIndex, completedCount, chapterJustCompleted);
       if (unlockedChapter) {
         showRetentionToast(I18N.t('chapterUnlockedToast').replace('{name}', I18N.t(unlockedChapter.nameKey)));
+        if (!chapterJustCompleted) Sound.play('chapterUnlocked'); // ждёт конца мелодии победы
       }
     });
   }
@@ -2034,13 +2398,14 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function goNext() {
       _currentLevel = -1;
+      cancelWinReveal(); // джингл главы в очереди — снять ДО рекламы
       maybeShowInterstitial(function () {
         if (nextIndex >= 0) {
           showGame(nextIndex);
         } else {
           showChapters();
         }
-      });
+      }, levelLabel(levelIndex));
     }
 
     document.getElementById('btn-next-level').textContent = I18N.t('next');
@@ -2057,6 +2422,7 @@ document.addEventListener('DOMContentLoaded', function () {
         I18N.t('chapterDoneTitle').replace('{name}', I18N.t(chapter.nameKey));
       document.getElementById('chapter-done-reward').textContent = I18N.t('chapterDoneReward');
       document.getElementById('chapter-done-overlay').hidden = false;
+      Sound.play('chapterDone'); // ждёт конца мелодии победы (queueAfter)
       document.getElementById('btn-chapter-done-next').onclick = function () {
         document.getElementById('chapter-done-overlay').hidden = true;
         goNext();
@@ -2106,9 +2472,11 @@ document.addEventListener('DOMContentLoaded', function () {
     showAdLoadingOverlay();
     lockRewardedGate();
     if (Platform.gameplayStop) Platform.gameplayStop(); // ТЗ №49, п.5: перед rewarded
+    goal('rewarded_click', { place: 'hint' });
     Platform.showRewarded(
       function () { pendingHint = hint; },
-      function () {
+      function (wasRewarded, outcome) {
+        goalRewardedResult('hint', wasRewarded, outcome);
         unlockRewardedGate();
         hideAdLoadingOverlay();
         Nonogram.setPaused(false);
@@ -2132,7 +2500,7 @@ document.addEventListener('DOMContentLoaded', function () {
   // индексом уровня, пазл дня — датой (бесплатная проверка/тосты пазла дня
   // «сгорают» и заводятся заново на следующий день, как и сам пазл).
   function checkStateKey() {
-    return (_currentLevel >= 0) ? ('c' + _currentLevel) : ('d' + _todayKey());
+    return (_currentLevel >= 0) ? ('c' + _currentLevel) : ('d' + (_dailyPlayKey || _todayKey()));
   }
 
   function updateCheckButton() {
@@ -2169,8 +2537,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
     // 1. Ошибок нет — сказать об этом, ничего не тратить, короткий
     // дабл-клик-предохранитель (2с), симметричный формулировке ТЗ.
-    if (!Nonogram.hasErrors()) {
+    // ТЗ №58 (Н-01): ошибка — и лишняя закраска, и крестик на клетке
+    // картинки (чаще всего его ставит сама игра после промаха); «Ошибок
+    // нет» при таком крестике раньше заводило игрока в тупик.
+    if (!Nonogram.hasErrors() && !Nonogram.hasWrongCrosses()) {
       showRetentionToast(I18N.t('checkNoErrors'));
+      Sound.play('checkClean');
       trackEvent('check_used', { mode: 'free', fixed: 0 });
       var noErrBtn = document.getElementById('btn-check');
       if (noErrBtn) {
@@ -2214,9 +2586,11 @@ document.addEventListener('DOMContentLoaded', function () {
     showAdLoadingOverlay();
     lockRewardedGate();
     if (Platform.gameplayStop) Platform.gameplayStop();
+    goal('rewarded_click', { place: 'check' });
     Platform.showRewarded(
       function () { pendingCheck = true; },
-      function () {
+      function (wasRewarded, outcome) {
+        goalRewardedResult('check', wasRewarded, outcome);
         unlockRewardedGate();
         hideAdLoadingOverlay();
         Nonogram.setPaused(false);
@@ -2238,9 +2612,10 @@ document.addEventListener('DOMContentLoaded', function () {
   // на КАЖДЫЙ ход, не только на закраску (autoFillCrosses/крестики тоже
   // зовут _onMove, что и нужно: простой считается от любого действия
   // игрока, не только от заливки).
-  function onBoardMove() {
+  function onBoardMove(kind) {
     var now = Date.now();
     _lastMoveAt = now;
+    _tipFieldMoved = true;
     if (Nonogram.hasErrors()) {
       if (!_errorSince) _errorSince = now;
     } else {
@@ -2257,20 +2632,109 @@ document.addEventListener('DOMContentLoaded', function () {
       var word = I18N.pluralRu(remaining, [I18N.t('cellWordOne'), I18N.t('cellWordFew'), I18N.t('cellWordMany')]);
       showRetentionToast(I18N.t('nearWin').replace('{n}', remaining).replace('{word}', word));
     }
+
+    // ТЗ №59 (Н-07): первый авто-крестик — после тостов ТЗ №51 (у них
+    // приоритет: показанный сейчас «почти собрал» откладывает подсказку).
+    if (kind === 'auto' && !_tipsShown.auto) _tipPending.auto = true;
+    tryPendingTips();
+  }
+
+  function nudgeTick() {
+    if (!Nonogram.hasErrors() || !_errorSince) return;
+    var key = checkStateKey();
+    if (_nudgeShownFor[key]) return;
+    var now = Date.now();
+    if (now - _errorSince >= NUDGE_ERROR_MS && now - _lastMoveAt >= NUDGE_IDLE_MS) {
+      _nudgeShownFor[key] = true;
+      showRetentionToast(I18N.t('checkNudge'));
+    }
   }
 
   function startNudgeTimer() {
     stopNudgeTimer();
     _nudgeTimer = setInterval(function () {
-      if (!Nonogram.hasErrors() || !_errorSince) return;
-      var key = checkStateKey();
-      if (_nudgeShownFor[key]) return;
-      var now = Date.now();
-      if (now - _errorSince >= NUDGE_ERROR_MS && now - _lastMoveAt >= NUDGE_IDLE_MS) {
-        _nudgeShownFor[key] = true;
-        showRetentionToast(I18N.t('checkNudge'));
-      }
+      nudgeTick();  // ТЗ №51 — первым, у него приоритет
+      tipsTick();   // ТЗ №59 (Н-07)
     }, 5000);
+  }
+
+  /* ---- ТЗ №59 (Н-07): три одноразовые подсказки ----
+     «Игра сама ставит ×» (первый авто-крестик), «Разведи двумя пальцами»
+     (первое поле с клеткой < 28 px на телефоне), «Не выходит? Нажми
+     «Проверить»» (первое застревание ≥ 30 с без хода, не раньше 3-й
+     картинки). Каждая — один раз за всю игру (_tipsShown в сейве), через
+     тот же тост, что у ТЗ №51. Повод есть, а экран занят (другой тост,
+     победа, оверлей, свёрнуто) — подсказка ждёт (_tipPending) и
+     пробуется снова на следующем ходу или такте таймера (5 с). */
+  var TIP_ZOOM_CELL_PX    = 28;
+  var TIP_STALL_MS        = 30000;
+  var TIP_STALL_MIN_SOLVED = 2;   // «не раньше 3-й картинки»: решено уже ≥ 2
+  var TIP_TEXT = { auto: 'tipAuto', zoom: 'tipZoom', check: 'tipCheck' };
+  var _tipPending = {};           // { auto|zoom: true } — повод был, ждёт свободного экрана
+  var _tipFieldMoved = false;     // на этом поле был ход (для «застревания»)
+  var _tipIdleFrom = 0;           // мс — с какого момента нет хода/экран снова виден
+
+  document.addEventListener('visibilitychange', function () {
+    // Свёрнутая игра — не застревание: отсчёт простоя заново с возврата.
+    if (!document.hidden) _tipIdleFrom = Date.now();
+  });
+
+  function onTipsFieldStart() {
+    _tipPending = {};
+    _tipFieldMoved = false;
+    _tipIdleFrom = Date.now();
+    if (!_tipsShown.zoom && isPhone()) {
+      var cell = document.querySelector('#puzzle-container .grid-cell');
+      if (cell && cell.getBoundingClientRect().width < TIP_ZOOM_CELL_PX) _tipPending.zoom = true;
+    }
+    tryPendingTips();
+  }
+
+  function isPhone() {
+    return !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+  }
+
+  function tipScreenFree() {
+    // RETENTION_CONFIG null, если retention.js не подключён (запуск исходника
+    // без build.py) — тогда и тоста нет, подсказки молчат, игра не падает.
+    if (!RETENTION_CONFIG) return false;
+    var toast = document.getElementById(RETENTION_CONFIG.domSlots.rewardToast);
+    return document.getElementById('game').classList.contains('is-active') &&
+      !document.hidden && !Nonogram.isWon() &&
+      // ход, который сейчас закончит картинку (победа ещё не объявлена)
+      (Nonogram.remainingCells() > 0 || Nonogram.hasErrors()) &&
+      !(toast && !toast.hidden) &&
+      document.getElementById('clear-confirm-overlay').hidden &&
+      document.getElementById('ad-loading-overlay').hidden;
+  }
+
+  function showTip(name) {
+    delete _tipPending[name];
+    if (_tipsShown[name]) return;
+    _tipsShown[name] = true;
+    saveProgress();
+    showRetentionToast(I18N.t(TIP_TEXT[name]));
+  }
+
+  function tryPendingTips() {
+    if (!tipScreenFree()) return;
+    if (_tipPending.auto) showTip('auto');
+    else if (_tipPending.zoom) showTip('zoom');
+  }
+
+  function solvedPicturesCount() {
+    return Object.keys(_completedLevels).length + Object.keys(_dailyDays).length;
+  }
+
+  function tipsTick() {
+    tryPendingTips();
+    if (_tipsShown.check || !_tipFieldMoved || !tipScreenFree()) return;
+    if (solvedPicturesCount() < TIP_STALL_MIN_SOLVED) return;
+    // Ошибки на поле — это случай тоста ТЗ №51 «лишняя клетка» (приоритет
+    // у него, совет тот же); после него на этой картинке — не повторяем.
+    if (Nonogram.hasErrors() || _nudgeShownFor[checkStateKey()]) return;
+    if (Nonogram.remainingCells() <= 0) return;
+    if (Date.now() - Math.max(_lastMoveAt, _tipIdleFrom) >= TIP_STALL_MS) showTip('check');
   }
 
   function stopNudgeTimer() {
@@ -2332,8 +2796,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // «15 сентября 2026» — тот же приём, что showCalendar() (I18N.t('month'+m)),
   // без внешних библиотек форматирования дат.
-  function storyDailyDateLabel() {
-    var now = Platform.now();
+  // dayKey — 'YYYY-M-D' пропущенного дня (ТЗ №59, Н-12); пусто — сегодня.
+  function storyDailyDateLabel(dayKey) {
+    var p = dayKey ? dayKey.split('-') : null;
+    var now = p ? new Date(+p[0], +p[1] - 1, +p[2]) : Platform.now();
     return now.getDate() + ' ' + I18N.t('month' + (now.getMonth() + 1)) + ' ' + now.getFullYear();
   }
 

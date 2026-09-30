@@ -34,7 +34,16 @@
   // Platform.SAVE_SIZE_GUARD_BYTES (platform.js / adapters/vk_bridge.js).
   // save.js — чистые функции без побочных эффектов, о площадке не знает,
   // enforceSizeGuard() принимает лимит параметром (см. ниже).
-  var MAX_UNFINISHED_BOARDS = 3;
+  // ТЗ №59 (Н-20): было 3 — четвёртая начатая картинка молча стирала самый
+  // старый черновик, хотя сейв занимал 947 байт из 3500. Теперь 10 — вся
+  // открытая глава; последним рубежом остаётся байтовый предохранитель
+  // (расчёт вместимости — docs/reports/2026-09-28_ТЗ59_audit_top10.md).
+  var MAX_UNFINISHED_BOARDS = 10;
+
+  // ТЗ №59 (Н-12): потолок черновиков пропущенных дней календаря
+  // (dailyPastBoards). Живут только в текущем месяце и вытесняются байтовым
+  // предохранителем раньше черновиков кампании.
+  var MAX_PAST_DAILY_BOARDS = 3;
 
   // true, если доска не содержит ни одной значимой отметки (закраски
   // или крестика) — такую доску незачем хранить в сейве.
@@ -125,6 +134,23 @@
     return boardStates;
   }
 
+  // ТЗ №59 (Н-12): черновики пропущенных дней — только прошедшие
+  // нерешённые дни ТОГО ЖЕ месяца, что todayKey ('YYYY-M-D'), не больше max
+  // (самые свежие по seq). Возвращает новый объект, вход не мутирует.
+  function prunePastDailyBoards(boards, todayKey, dailyDays, max) {
+    var t = String(todayKey).split('-');
+    var out = {};
+    Object.keys(boards || {}).forEach(function (k) {
+      var p = k.split('-');
+      if (p.length !== 3 || p[0] !== t[0] || p[1] !== t[1] || +p[2] >= +t[2]) return;
+      if (dailyDays && dailyDays[k]) return;
+      if (!isEncodedBoard(boards[k])) return;
+      out[k] = boards[k];
+    });
+    capUnfinishedBoards(out, max == null ? MAX_PAST_DAILY_BOARDS : max);
+    return out;
+  }
+
   function emptySave() {
     return {
       completedLevels: {},
@@ -184,6 +210,14 @@
       ladderSeries:     0,
       ladderClaimedDay: '',
       hooksShown:       {},
+      // ТЗ №59 (Н-07): одноразовые подсказки-тосты { auto, zoom, check } —
+      // какие уже показаны игроку (каждая один раз за всю игру). Поле
+      // необязательное: сейв v62 без него читается как {}.
+      tipsShown:        {},
+      // ТЗ №59 (Н-12): черновики пропущенных дней календаря
+      // { 'YYYY-M-D': {w,h,rle,seq} } — отдельно от dailyBoard сегодняшнего
+      // пазла. Необязательное: сейв v62 без него читается как {}.
+      dailyPastBoards:  {},
     };
   }
 
@@ -199,13 +233,31 @@
   // всё ещё больше limitBytes, выбрасывает САМУЮ СТАРУЮ (по seq)
   // недорешённую доску кампании — НИКОГДА не completedLevels/cosmeticsOwned
   // и прочий прогресс. Останавливается, когда boardStates опустел.
-  // Мутирует payload.boardStates.
-  function enforceSizeGuard(payload, limitBytes) {
+  // Мутирует payload.boardStates. ТЗ №59: evicted (необязательный массив) —
+  // сюда дописывается { key, reason: 'cap' | 'bytes' } на каждую выброшенную
+  // доску, чтобы вызывающий мог сказать об этом в debug-панели.
+  function enforceSizeGuard(payload, limitBytes, evicted) {
+    // ТЗ №59 (Н-12): черновики пропущенных дней — первыми (они наименее
+    // ценны: пазл дня можно не доигрывать, кампанию — нельзя).
+    var past = payload.dailyPastBoards;
+    while (past && payloadSize(payload) > limitBytes) {
+      var oldestPast = oldestBoardKey(past);
+      if (oldestPast == null) break;
+      delete past[oldestPast];
+      if (evicted) evicted.push({ key: 'daily:' + oldestPast, reason: 'bytes' });
+    }
+    var before = evicted ? Object.keys(payload.boardStates) : null;
     capUnfinishedBoards(payload.boardStates, MAX_UNFINISHED_BOARDS);
+    if (evicted) {
+      before.forEach(function (k) {
+        if (!(k in payload.boardStates)) evicted.push({ key: k, reason: 'cap' });
+      });
+    }
     while (payloadSize(payload) > limitBytes) {
       var oldest = oldestBoardKey(payload.boardStates);
       if (oldest == null) break;
       delete payload.boardStates[oldest];
+      if (evicted) evicted.push({ key: oldest, reason: 'bytes' });
     }
     return payload;
   }
@@ -294,6 +346,16 @@
     out.ladderSeries     = (typeof oldSave.ladderSeries === 'number') ? oldSave.ladderSeries : 0;
     out.ladderClaimedDay = (typeof oldSave.ladderClaimedDay === 'string') ? oldSave.ladderClaimedDay : '';
     out.hooksShown       = (oldSave.hooksShown && typeof oldSave.hooksShown === 'object') ? oldSave.hooksShown : {};
+    out.tipsShown        = (oldSave.tipsShown && typeof oldSave.tipsShown === 'object') ? oldSave.tipsShown : {};
+    // Битые записи отбрасываются; «не тот месяц / уже решён» чистит main.js
+    // (prunePastDailyBoards) — migrate() не знает, какое сегодня число.
+    out.dailyPastBoards = {};
+    if (oldSave.dailyPastBoards && typeof oldSave.dailyPastBoards === 'object') {
+      Object.keys(oldSave.dailyPastBoards).forEach(function (k) {
+        var b = oldSave.dailyPastBoards[k];
+        if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(k) && isEncodedBoard(b)) out.dailyPastBoards[k] = b;
+      });
+    }
 
     // Подчистка «призрачных» пустых досок — старые сейвы могли записать
     // недорешённую доску, которую потом стёрли до нуля (см. фикс в main.js:
@@ -334,6 +396,8 @@
     capUnfinishedBoards:   capUnfinishedBoards,
     payloadSize:           payloadSize,
     enforceSizeGuard:      enforceSizeGuard,
+    prunePastDailyBoards:  prunePastDailyBoards,
     MAX_UNFINISHED_BOARDS: MAX_UNFINISHED_BOARDS,
+    MAX_PAST_DAILY_BOARDS: MAX_PAST_DAILY_BOARDS,
   };
 });

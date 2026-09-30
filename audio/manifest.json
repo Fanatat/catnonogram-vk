@@ -1,0 +1,297 @@
+{
+ "version": 1,
+ "basePath": "sfx/",
+ "formats": [
+  "ogg",
+  "mp3"
+ ],
+ "buses": {
+  "master": 0.9,
+  "sfx": 1.0,
+  "ui": 0.8
+ },
+ "groups": {
+  "ui": {
+   "bus": "ui"
+  },
+  "foley": {
+   "bus": "sfx"
+  },
+  "sfx": {
+   "bus": "sfx"
+  },
+  "event": {
+   "bus": "sfx"
+  }
+ },
+ "events": {
+  "cellFill": {
+   "group": "foley",
+   "volume": 0.5,
+   "pitchVar": 0.05,
+   "volVar": 0.07,
+   "maxInstances": 3,
+   "minGapMs": 30,
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "fill_wood_1",
+      "fill_wood_2",
+      "fill_wood_3",
+      "fill_wood_4",
+      "fill_wood_5"
+     ]
+    }
+   ]
+  },
+  "cellCross": {
+   "group": "foley",
+   "volume": 0.42,
+   "pitchVar": 0.05,
+   "volVar": 0.07,
+   "maxInstances": 3,
+   "minGapMs": 30,
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "cross_tick_1",
+      "cross_tick_2",
+      "cross_tick_3",
+      "cross_tick_4",
+      "cross_tick_5"
+     ]
+    }
+   ]
+  },
+  "cellErase": {
+   "group": "foley",
+   "volume": 0.4,
+   "pitchVar": 0.04,
+   "volVar": 0.07,
+   "maxInstances": 2,
+   "minGapMs": 45,
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "erase_slide_1",
+      "erase_slide_2"
+     ]
+    }
+   ]
+  },
+  "lineClosed": {
+   "group": "sfx",
+   "volume": 0.55,
+   "pitchVar": 0,
+   "volVar": 0.06,
+   "maxInstances": 4,
+   "combo": {
+    "steps": [
+     0,
+     2,
+     5,
+     7,
+     9,
+     12
+    ],
+    "windowMs": 1500,
+    "rollMs": 70
+   },
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "line_marimba_D5",
+      "line_marimba_E5",
+      "line_marimba_G5",
+      "line_marimba_A5",
+      "line_marimba_B5",
+      "line_marimba_D6"
+     ],
+     "mode": "steps"
+    }
+   ]
+  },
+  "hint": {
+   "group": "sfx",
+   "volume": 0.5,
+   "pitchVar": 0.03,
+   "volVar": 0.05,
+   "maxInstances": 1,
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "hint_sparkle"
+     ]
+    }
+   ]
+  },
+  "checkClean": {
+   "group": "sfx",
+   "volume": 0.5,
+   "pitchVar": 0,
+   "volVar": 0.05,
+   "maxInstances": 1,
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "check_up_marimba"
+     ]
+    }
+   ]
+  },
+  "checkFixed": {
+   "group": "sfx",
+   "volume": 0.5,
+   "pitchVar": 0,
+   "volVar": 0.05,
+   "maxInstances": 1,
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "fixed_down_marimba"
+     ]
+    }
+   ]
+  },
+  "clearBoard": {
+   "group": "foley",
+   "volume": 0.55,
+   "pitchVar": 0,
+   "volVar": 0,
+   "maxInstances": 1,
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "clear_page"
+     ]
+    }
+   ]
+  },
+  "win": {
+   "group": "event",
+   "volume": 0.8,
+   "pitchVar": 0,
+   "volVar": 0,
+   "maxInstances": 1,
+   "cancels": {
+    "lineClosed": 150
+   },
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "win_marimba"
+     ]
+    }
+   ]
+  },
+  "chapterDone": {
+   "group": "event",
+   "volume": 0.85,
+   "pitchVar": 0,
+   "volVar": 0,
+   "maxInstances": 1,
+   "queueAfter": {
+    "win": 350
+   },
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "chapter_marimba"
+     ]
+    }
+   ]
+  },
+  "chapterUnlocked": {
+   "group": "event",
+   "volume": 0.62,
+   "pitchVar": 0,
+   "volVar": 0,
+   "maxInstances": 1,
+   "queueAfter": {
+    "win": 300
+   },
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "unlock_glock"
+     ]
+    }
+   ]
+  },
+  "reward": {
+   "group": "event",
+   "volume": 0.5,
+   "pitchVar": 0,
+   "volVar": 0,
+   "maxInstances": 1,
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "reward_chord"
+     ]
+    }
+   ]
+  },
+  "uiTap": {
+   "group": "ui",
+   "volume": 0.35,
+   "pitchVar": 0.04,
+   "volVar": 0.06,
+   "maxInstances": 2,
+   "minGapMs": 40,
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "ui_tap_1",
+      "ui_tap_2"
+     ]
+    }
+   ]
+  },
+  "uiBack": {
+   "group": "ui",
+   "volume": 0.35,
+   "pitchVar": 0.03,
+   "volVar": 0.06,
+   "maxInstances": 2,
+   "minGapMs": 40,
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "ui_back"
+     ]
+    }
+   ]
+  },
+  "uiToggle": {
+   "group": "ui",
+   "volume": 0.27,
+   "pitchVar": 0.03,
+   "volVar": 0.06,
+   "maxInstances": 2,
+   "minGapMs": 40,
+   "active": 0,
+   "variants": [
+    {
+     "files": [
+      "ui_toggle"
+     ]
+    }
+   ]
+  }
+ }
+}

@@ -35,6 +35,10 @@ window.I18N = (function () {
       daily:       'Ежедневный',
       dailyLabel:  'Ежедневный пазл',
       backToMenu:  'В меню',
+      // ТЗ №59 (Н-12): пропущенный день календаря
+      backToCalendar: 'К календарю',
+      calPastHint:  'Пропущенный день можно сыграть — нажми на него',
+      calPlayDay:   'Сыграть пазл дня за {date}',
       // ТЗ №26, Р5 (25.08): развод формулировок «серии» — на Яндексе
       // строка раздатчика (retentionStreakLine, ниже) встаёт над этой,
       // слово «серия» не должно звучать дважды. Текст — буквально из
@@ -187,6 +191,13 @@ window.I18N = (function () {
       // ТЗ №50: экран глав («Альбом»).
       albumTitle:      'Альбом',
       chapterProgress: '{k} из 10',
+      // ТЗ №59 (Н-20): подпись миниатюры начатой картинки (для экранного диктора).
+      thumbStarted:    'Картинка {n}, начата',
+      // ТЗ №59 (Н-09): подпись над полем кампании — глава, прогресс в ней
+      // и сколько решить до следующей (если та заперта).
+      levelLabelChapter: 'Глава «{name}»',
+      levelLabelNext:    'ещё {n} до',
+      levelLabelNextName: '«{name}»',
       // 2026-09-25: глава открывается прогрессом (7 из 10 в предыдущей)
       // или сразу за рекламу — строка называет ровно это условие.
       chapterLocked:   'Решите ещё {n} {word} в главе {k}, чтобы открыть',
@@ -213,6 +224,10 @@ window.I18N = (function () {
       checkFixed:   'Исправлено: {n}',
       checkNudge:   'Кажется, где-то лишняя клетка — нажми ✓',
       nearWin:      'Осталось {n} {word}!',
+      // ТЗ №59 (Н-07): одноразовые подсказки — каждая один раз за всю игру.
+      tipAuto:      'Игра сама ставит ×, где закраски быть не может',
+      tipZoom:      'Разведи двумя пальцами, чтобы увеличить',
+      tipCheck:     'Не выходит? Нажми «Проверить»',
       cellWordOne:  'клетка',
       cellWordFew:  'клетки',
       cellWordMany: 'клеток',
@@ -251,6 +266,9 @@ window.I18N = (function () {
       daily:       'Daily',
       dailyLabel:  'Daily Puzzle',
       backToMenu:  'Menu',
+      backToCalendar: 'Calendar',
+      calPastHint:  'Missed a day? Tap it to play',
+      calPlayDay:   'Play the daily puzzle for {date}',
       streakLabel: 'Puzzles in a row: {n}',
       shop:               'Shop',
       shopTitle:          'Cosmetics',
@@ -385,6 +403,10 @@ window.I18N = (function () {
       // ТЗ №50: chapters screen («Album»).
       albumTitle:      'Album',
       chapterProgress: '{k} of 10',
+      thumbStarted:    'Picture {n}, started',
+      levelLabelChapter: 'Chapter “{name}”',
+      levelLabelNext:    '{n} more to',
+      levelLabelNextName: '“{name}”',
       chapterLocked:   'Solve {n} more {word} in chapter {k} to unlock',
       pictureWordOne:  'picture',
       pictureWordFew:  'pictures',
@@ -409,6 +431,9 @@ window.I18N = (function () {
       checkFixed:   'Fixed: {n}',
       checkNudge:   'Looks like there’s an extra cell — try ✓',
       nearWin:      '{n} {word} left!',
+      tipAuto:      'The game puts × where no fill is possible',
+      tipZoom:      'Spread two fingers to zoom in',
+      tipCheck:     'Stuck? Tap “Check”',
       cellWordOne:  'cell',
       cellWordFew:  'cells',
       cellWordMany: 'cells',

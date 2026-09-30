@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="ru" data-metrika-frame="1">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
+  <title>Нонограмма</title>
+  <!--
+    ТЗ №57: фрейм-изолятор Яндекс Метрики. Пустая страница того же сайта;
+    analytics.js открывает её невидимым <iframe referrerpolicy="no-referrer">
+    БЕЗ query/hash и грузит tag.js внутрь. tag.js читает location.href и
+    document.referrer СВОЕГО окна (в т.ч. в служебных запросах, которые не
+    управляются опциями init: телеметрия ошибок самого tag.js, синхронизация
+    с операторами связи) — здесь это чистый адрес metrika.html и пустой
+    реферер, а не адрес ВК-фрейма с vk_user_id/sign. Кнопок и форм здесь
+    нет — автоцели и клики Метрике ловить нечего.
+    Первый скрипт — keepalive для запросов Метрики (см. комментарий в нём),
+    второй — стандартная очередь ym() из сниппета Метрики: tag.js
+    подхватывает её при загрузке. Больше сюда ничего не добавлять.
+  -->
+  <script>
+    // Цели tag.js шлёт sendBeacon'ом (он переживает закрытие страницы), а в
+    // Android WebView (приложение ВК на Android) — обычным fetch без
+    // keepalive: sendBeacon там tag.js выключает сам. Такой fetch, начатый в
+    // момент закрытия игры (level_quit в pagehide), браузер обрывает вместе
+    // со страницей, и цель доходит только при следующем запуске (досылка
+    // tag.js), а у не вернувшегося игрока — никогда. keepalive оставляет
+    // запрос жить после закрытия, как у sendBeacon. Только адреса Метрики;
+    // игра и остальные запросы не трогаются. Проверено живым прогоном с
+    // настоящим tag.js и закрытием вкладки (tools/acceptance_analytics.js).
+    (function () {
+      var orig = window.fetch;
+      if (typeof orig !== 'function') return;
+      var MC = /^https:\/\/([a-z0-9-]+\.)*mc\.yandex\.[a-z.]+\//i;
+      window.fetch = function (input, init) {
+        var args = arguments;
+        try {
+          var url = typeof input === 'string' ? input : String((input && input.url) || '');
+          if (MC.test(url) && !(init && init.keepalive)) {
+            var o = {};
+            if (init) for (var k in init) o[k] = init[k];
+            o.keepalive = true;
+            args = [input, o];
+          }
+        } catch (e) { /* не вышло — запрос уходит как есть */ }
+        return orig.apply(window, args);
+      };
+    })();
+  </script>
+  <script>window.ym=window.ym||function(){(window.ym.a=window.ym.a||[]).push(arguments)};window.ym.l=1*new Date();</script>
+</head>
+<body></body>
+</html>

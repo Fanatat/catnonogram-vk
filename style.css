@@ -1,7 +1,7 @@
 :root {
   --bg:        #f3ead6;
   --ink:       #2b2723;
-  --ink-light: #7a6f65;
+  --ink-light: #6b6158; /* ТЗ №59 (Н-13): было #7a6f65 — 4,09:1, стало 5,05:1 */
   --accent:    #4a7c59;
   --radius:    6px;
   /* ТЗ №13, фаза 2 → ТЗ №14, фаза 1: узор на фоне — тон чернил темы поверх
@@ -28,14 +28,14 @@ html.theme-ink-blue {
 html.theme-sepia {
   --bg:        #ece0c8;
   --ink:       #4a3728;
-  --ink-light: #8a6f56;
+  --ink-light: #6f5642; /* ТЗ №59: было #8a6f56 — 3,58:1, стало 5,21:1 */
   --accent:    #a3703f;
   --pattern-dot: rgba(74, 55, 40, 0.09);
 }
 html.theme-graphite {
   --bg:        #e9e7e2;
   --ink:       #2e2e30;
-  --ink-light: #6c6c70;
+  --ink-light: #5e5e62; /* ТЗ №59: было #6c6c70 — 4,23:1, стало 5,22:1 */
   --accent:    #55606b;
   --pattern-dot: rgba(46, 46, 48, 0.09);
 }
@@ -355,10 +355,13 @@ html, body {
   .daily-meta { margin-top: 2px; min-height: 22px; }
 }
 
-/* Запертая глава приглушена, кроме кнопки «открыть сейчас» — она
-   действующая, не должна выглядеть неактивной. */
-.chapter-card.is-locked > :not(.chapter-unlock-btn) {
-  opacity: 0.55;
+/* Запертая глава приглушена цветом, не прозрачностью (ТЗ №59, Н-13):
+   opacity 0.55 давала условию замка 2:1, названию 3,3:1. Теперь название
+   и счётчик — --ink-light (≥ 4,5:1 во всех темах), строка условия и
+   кнопка «открыть сейчас» — как у открытой главы. */
+.chapter-card.is-locked .chapter-name,
+.chapter-card.is-locked .chapter-progress {
+  color: var(--ink-light);
 }
 .chapter-card.is-locked .chapter-head-btn { cursor: pointer; }
 .chapter-card .chapter-unlock-btn {
@@ -576,6 +579,22 @@ html, body {
 .thumb.is-done {
   border-color: var(--accent);
 }
+/* ТЗ №59 (Н-20): начатая картинка (есть черновик) — номер плюс точка цвета
+   акцента в углу, рамка как у открытой. Без новых ассетов. */
+.thumb.is-started {
+  position: relative;
+  border-color: var(--ink);
+}
+.thumb.is-started .thumb-num { color: var(--ink); font-weight: 700; }
+.thumb.is-started::after {
+  content: '';
+  position: absolute;
+  top: 2px; right: 2px;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  pointer-events: none;
+}
 .thumb.is-locked {
   border-style: dashed;
   cursor: pointer;
@@ -628,6 +647,23 @@ html, body {
   line-height: 1;
 }
 .level-label { font-size: 0.9rem; color: var(--ink-light); }
+/* ТЗ №59 (Н-09): подпись кампании — одна-две строки; обрезается название,
+   число и «ещё N до» остаются видны. Шапка не шире экрана на 320 px. */
+.game-head .level-label {
+  flex: 0 1 auto;      /* не растёт: ⟲ остаётся сразу за подписью, как было */
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.level-label-line { display: flex; min-width: 0; }
+.level-label-line + .level-label-line { font-size: 0.85em; }
+.level-label-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.level-label-fix { flex: none; white-space: pre; }
 
 .puzzle-container {
   flex: 1;
@@ -1148,7 +1184,7 @@ html, body {
   border: 2px solid var(--ink);
   background: transparent;
   color: var(--ink);
-  font-size: clamp(0.66rem, 3.1vw, 0.9rem);
+  font-size: clamp(0.75rem, 3.1vw, 0.9rem); /* ТЗ №59: не меньше 12 px (было 10,6 на 320 px) */
   transition: background 0.12s, color 0.12s;
 }
 .mode-btn.is-active {
@@ -1163,7 +1199,7 @@ html, body {
   border: 2px solid var(--ink-light);
   background: transparent;
   color: var(--ink-light);
-  font-size: clamp(0.6rem, 2.8vw, 0.82rem);
+  font-size: clamp(0.75rem, 2.8vw, 0.82rem); /* ТЗ №59: не меньше 12 px (было 10,9) */
 }
 .hint-btn:disabled {
   opacity: 0.35;
@@ -1202,7 +1238,7 @@ html, body {
    при переключении между «есть бесплатные» и «дальше реклама» — переключает
    .is-visible updateHintBadge() в main.js. */
 .hint-ad-caption {
-  font-size: 0.68em;
+  font-size: 11px; /* ТЗ №59 (Н-13): было 0.68em ≈ 7,4 px */
   font-weight: 400;
   visibility: hidden;
 }
@@ -1325,6 +1361,33 @@ html, body {
 
 .cal-day.today.done {
   border-color: rgba(43, 39, 35, 0.35);
+}
+
+/* ТЗ №59 (Н-12): прошедший нерешённый день — кнопка, открывает его пазл.
+   Пунктир — «можно сыграть»; точка — начат (есть черновик). */
+button.cal-day {
+  font: inherit;
+  font-size: 0.82rem;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.cal-day.playable:not(.today) { border: 1.5px dashed var(--ink-light); }
+.cal-day.started { position: relative; }
+.cal-day.started::after {
+  content: '';
+  position: absolute;
+  top: 3px; right: 3px;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.cal-note {
+  margin: 14px 0 0;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--ink-light);
 }
 
 /* ---- Экран косметики (Задача E — каркас, Задача I — список гамм) ---- */

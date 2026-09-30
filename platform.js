@@ -64,6 +64,16 @@ function vkPruneWriteLog(writeLog, nowMs) {
   return writeLog.slice(i);
 }
 
+// ТЗ №59 (Н-02): страница уже скрыта (ВК свёрнут) — запись уходит сразу,
+// без дебаунса: main.js кладёт свежий черновик своим обработчиком
+// visibilitychange ПОСЛЕ того, как адаптер уже отправил старый буфер, и
+// 10-секундный таймер оставлял последние ходы только в памяти — ВК мог
+// выгрузить страницу раньше. Тот же мягкий тормоз: с порога торможения
+// (≥700 записей за час) — обычный отложенный путь. Чистая функция.
+function vkShouldSendNow(pageHidden, writeCountLastHour) {
+  return !!pageHidden && writeCountLastHour < VK_SOFT_BRAKE_THRESHOLD;
+}
+
 // Сколько миллисекунд ждать перед следующей отправкой, исходя из числа
 // реальных записей за последний скользящий час. До порога — базовый
 // дебаунс; после — линейный рост до потолка на подходе к лимиту.
@@ -195,8 +205,12 @@ window.Platform = (function () {
       return Promise.resolve();
     }
     _pendingState = fullState;
+    _writeLog = vkPruneWriteLog(_writeLog, Date.now());
+    if (vkShouldSendNow(document.visibilityState === 'hidden', _writeLog.length)) {
+      vkFlushNow();
+      return Promise.resolve();
+    }
     if (!_flushTimer) {
-      _writeLog = vkPruneWriteLog(_writeLog, Date.now());
       var delay = vkComputeDebounceDelay(_writeLog.length);
       _flushTimer = setTimeout(vkFlushPending, delay);
     }
@@ -217,6 +231,12 @@ window.Platform = (function () {
   // уже используется ниже в showRewarded() этого же файла.
   var STORAGE_TIMEOUT_MS = 5000;
 
+  // ТЗ №57: сейв не прочитался (ошибка/таймаут StorageGet, битый JSON) —
+  // load() отдаёт null, как и для нового игрока; флаг отличает одно от
+  // другого для аналитики (game_loaded.new_player = -1). На игру не влияет.
+  var _loadFailed = false;
+  function loadFailed() { return _loadFailed; }
+
   function load() {
     if (!available) {
       try {
@@ -231,6 +251,7 @@ window.Platform = (function () {
       })
       .catch(function (e) {
         console.error('[Platform] StorageGet ошибка/таймаут (' + STORAGE_TIMEOUT_MS + 'мс):', e);
+        _loadFailed = true;
         return null;
       });
   }
@@ -485,20 +506,25 @@ window.Platform = (function () {
   // но риск идентичен, чинится тем же приёмом.
   var INTERSTITIAL_TIMEOUT_MS = 15000; // короче REWARD_AD_TIMEOUT_MS — не обещание награды, можно решительнее
 
-  // Полноэкранная реклама. onDone() зовём в любом исходе.
+  // Полноэкранная реклама. onDone(shown) зовём в любом исходе; shown — true,
+  // только если площадка подтвердила показ (result:true) — для аналитики
+  // (ТЗ №57, interstitial_shown), на ход игры не влияет.
   function showInterstitial(onDone) {
     var finished = false;
-    function done() { if (!finished) { finished = true; if (onDone) onDone(); } }
+    function done(shown) { if (!finished) { finished = true; if (onDone) onDone(!!shown); } }
 
-    if (!available) { done(); return; }
+    if (!available) { done(false); return; }
     vkFlushNow(); // событие «перед рекламой» — не ждём дебаунса
     withTimeout(vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'interstitial' }), INTERSTITIAL_TIMEOUT_MS)
-      .then(done)
-      .catch(function (e) { console.warn('[Platform] interstitial недоступен/не ответил:', e); done(); });
+      .then(function (res) { done(!!res && res.result === true); })
+      .catch(function (e) { console.warn('[Platform] interstitial недоступен/не ответил:', e); done(false); });
   }
 
-  // Реклама за награду. onReward() — выдать награду. onClose() — вернуть
-  // звук/состояние (зовём всегда после закрытия).
+  // Реклама за награду. onReward() — выдать награду. onClose(wasRewarded,
+  // outcome) — вернуть звук/состояние (зовём всегда после закрытия).
+  // outcome (ТЗ №57, rewarded_result): 'reward' — площадка подтвердила
+  // досмотр, 'closed' — ролик закрыт без награды (result:false), 'error' —
+  // ролика не было (нет моста, отказ, таймаут; награда при этом бесплатно).
   // Фикс 7: если проверка показала, что rewarded недоступен (adblock) —
   // ролик вообще не запускаем, награда выдаётся сразу («бесплатный режим»).
   // ТЗ №12: «бесплатный режим» — это ЛЮБОЙ случай, когда мы не можем
@@ -544,7 +570,7 @@ window.Platform = (function () {
     if (!available) {
       if (window.debugLog) window.debugLog('showRewarded: Platform недоступен (dev-режим) -> бесплатно сразу');
       if (onReward) onReward();
-      if (onClose) onClose(true);
+      if (onClose) onClose(true, 'error');
       return;
     }
     // Защита от повторной отправки (2026-09-07, живой скриншот основателя
@@ -602,7 +628,7 @@ window.Platform = (function () {
         // обычную 10с-очередь дебаунса адаптера; без форс-флаша здесь она
         // терялась при быстром уходе со страницы).
         if (rewarded) vkFlushNow();
-        if (onClose) onClose(rewarded);
+        if (onClose) onClose(rewarded, rewarded ? 'reward' : 'closed');
       })
       .catch(function (e) {
         clearInterval(_waitTick);
@@ -633,7 +659,7 @@ window.Platform = (function () {
         if (window.debugLog) window.debugLog('showRewarded: ИТОГ — площадка ' + verdict + ' -> выдаём бесплатно', { big: true });
         if (onReward) onReward();
         vkFlushNow();
-        if (onClose) onClose(true);
+        if (onClose) onClose(true, 'error');
       });
   }
 
@@ -786,6 +812,7 @@ window.Platform = (function () {
     isAvailable: isAvailable,
     save: save,
     load: load,
+    loadFailed: loadFailed,
     now: now,
     showBannerAd: showBannerAd,
     showInterstitial: showInterstitial,
@@ -815,6 +842,7 @@ window.Platform = (function () {
 if (typeof module === 'object' && module.exports) {
   module.exports = {
     computeDebounceDelay: vkComputeDebounceDelay,
+    shouldSendNow:        vkShouldSendNow,
     pruneWriteLog:        vkPruneWriteLog,
     SAVE_DEBOUNCE_MS:     VK_SAVE_DEBOUNCE_MS,
     WRITE_LIMIT_PER_HOUR: VK_WRITE_LIMIT_PER_HOUR,
