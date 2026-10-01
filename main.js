@@ -569,7 +569,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   var _retentionToastTimer = null;
 
-  function showRetentionToast(text) {
+  function showRetentionToast(text, ms) {
     var el = document.getElementById(RETENTION_CONFIG.domSlots.rewardToast);
     if (!el) return;
     el.textContent = text;
@@ -581,7 +581,7 @@ document.addEventListener('DOMContentLoaded', function () {
     _retentionToastTimer = setTimeout(function () {
       el.classList.remove('is-visible');
       setTimeout(function () { el.hidden = true; }, 260); // дождаться transition
-    }, 3200);
+    }, ms || 3200);
   }
 
   // ТЗ №51а: тост «почти собрал» (1-3 клетки) живёт 3.2с, а последние
@@ -639,6 +639,56 @@ document.addEventListener('DOMContentLoaded', function () {
   }
   function unlockRewardedGate() {
     _rewardedGateOpen = true;
+  }
+
+  // Бонус «за рекламу» (решение основателя 2026-10-01, раунд 2: реклама за
+  // вознаграждение, rewarded; interstitial по кнопке правилами площадок не
+  // предусмотрен — он отключён флагом BONUS_AD_FORMAT в адаптерах).
+  // ЕДИНСТВЕННЫЙ путь к бонусу за рекламу — подсказка, «Проверить», открыть
+  // главу идут через него. Бонус выдаётся (onShown) ТОЛЬКО если
+  // Platform.showBonusAd подтвердил просмотр. adblock, ошибка, отказ SDK,
+  // таймаут, игра вне площадки — бонуса нет, игроку тост adNotShown (в т.ч.
+  // «Отключите блокировщик рекламы»), счётчики не меняются. Пути «рекламы
+  // нет → бесплатно» нет нигде.
+  // За ОДИН просмотр — HINTS_PER_AD подсказок (раунд 2, чтобы игроки
+  // смотрели рекламу реже); одна тратится сразу, остальные — в баланс.
+  // opts.pauseBoard — ставить поле на паузу; onShown() — выдать бонус
+  // (после снятия паузы/звука); onDone(shown) — по желанию, после всего.
+  var HINTS_PER_AD = 5;
+
+  function runBonusAd(place, opts, onShown, onDone) {
+    if (opts.pauseBoard) {
+      if (_currentLevel >= 0) flushBoardSave(_currentLevel);
+      Nonogram.setPaused(true);
+    }
+    Sound.suspend();
+    // Nonogram.setPaused(true) блокирует поле молча — оверлей объясняет
+    // ПОЧЕМУ (баг-репорт основателя 2026-09-06).
+    showAdLoadingOverlay();
+    lockRewardedGate();
+    if (Platform.gameplayStop) Platform.gameplayStop(); // ТЗ №49, п.5: перед полноэкранной рекламой
+    goal('rewarded_click', { place: place });
+    Platform.showBonusAd(function (shown, reason) {
+      // Имена целей Метрики прежние (rewarded_*) — ряд не рвём; result:
+      // reward = показано и бонус выдан, closed = площадка отказала
+      // (adblock/пауза/нет объявления), error = нет моста/сбой/таймаут.
+      goalRewardedResult(place, shown, shown ? 'reward' : (reason === 'refused' ? 'closed' : 'error'),
+        shown && opts.hints ? opts.hints : 0);
+      unlockRewardedGate();
+      hideAdLoadingOverlay();
+      if (opts.pauseBoard) Nonogram.setPaused(false);
+      Sound.resume();
+      if (shown) {
+        // Плановый interstitial (maybeShowInterstitial) живёт по своим паузам
+        // и этим показом не сдвигается: бонус — выбор игрока, паузы между
+        // показами площадки сохранены как были (ТЗ 2026-10-01, п.7).
+        onShown();
+      } else {
+        window.debugLog('bonus ad: не показана (' + reason + ') — бонус не выдан');
+        showRetentionToast(I18N.t('adNotShown'), 6000);
+      }
+      if (onDone) onDone(shown);
+    });
   }
 
   // Яндекс 4.5.1 (усиление 2026-09-06, прямая просьба основателя после
@@ -783,10 +833,13 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   // outcome — второй аргумент onClose адаптера ('reward' | 'closed' | 'error').
-  function goalRewardedResult(place, wasRewarded, outcome) {
+  // hints — сколько подсказок выдано за этот просмотр (только hint/check, 0 — не добавляется).
+  function goalRewardedResult(place, wasRewarded, outcome, hints) {
     var result = (outcome === 'reward' || outcome === 'closed' || outcome === 'error')
       ? outcome : (wasRewarded ? 'reward' : 'closed');
-    goal('rewarded_result', { place: place, result: result });
+    var params = { place: place, result: result };
+    if (hints > 0) params.hints = hints;
+    goal('rewarded_result', params);
   }
 
   function ladderRewardKey(reward) {
@@ -1620,34 +1673,18 @@ document.addEventListener('DOMContentLoaded', function () {
       return;
     }
     Sound.resumeContext();
-    // ТЗ №55: звук на время ролика — на паузе, как у подсказки за рекламу
-    // (до ТЗ №55 здесь паузы не было).
-    Sound.suspend();
-    showAdLoadingOverlay();
-    lockRewardedGate();
-    if (Platform.gameplayStop) Platform.gameplayStop();
-    var granted = false;
-    goal('rewarded_click', { place: 'chapter' });
-    Platform.showRewarded(function onReward() {
+    runBonusAd('chapter', {}, function () {
       if (_chaptersUnlocked[ch.key]) return;
       _chaptersUnlocked[ch.key] = true;
-      granted = true;
       saveProgress();
       trackEvent('chapter_unlock_ad', { chapter: ch.key });
-    }, function onClose(wasRewarded, outcome) {
-      goalRewardedResult('chapter', wasRewarded, outcome);
-      // ad_error — ролика не было (сбой/таймаут площадки), глава выдана
-      // бесплатно по стандарту студии: в доле «открыли рекламой» не считать.
-      if (granted) goal('chapter_open', { chapter: CHAPTERS.indexOf(ch) + 1, via: outcome === 'error' ? 'ad_error' : 'ad' });
-      unlockRewardedGate();
-      hideAdLoadingOverlay();
-      Sound.resume();
+      goal('chapter_open', { chapter: CHAPTERS.indexOf(ch) + 1, via: 'ad' });
+    }, function (shown) {
       if (!document.getElementById('chapters').classList.contains('is-active')) return;
+      if (!shown) return;
       showChapters();
-      if (granted) {
-        showRetentionToast(I18N.t('chapterUnlockedToast').replace('{name}', I18N.t(ch.nameKey)));
-        Sound.play('chapterUnlocked');
-      }
+      showRetentionToast(I18N.t('chapterUnlockedToast').replace('{name}', I18N.t(ch.nameKey)));
+      Sound.play('chapterUnlocked');
     });
   }
 
@@ -2461,36 +2498,19 @@ document.addEventListener('DOMContentLoaded', function () {
       return;
     }
 
-    var pendingHint = null;
-    if (_currentLevel >= 0) flushBoardSave(_currentLevel);
-    Sound.suspend();
-    Nonogram.setPaused(true);
-    // Nonogram.setPaused(true) уже блокирует поле — showAdLoadingOverlay()
-    // объясняет ПОЧЕМУ (до 40с ожидания, REWARD_AD_TIMEOUT_MS), а не
-    // оставляет игрока смотреть на молча замершую доску (баг-репорт
-    // основателя 2026-09-06).
-    showAdLoadingOverlay();
-    lockRewardedGate();
-    if (Platform.gameplayStop) Platform.gameplayStop(); // ТЗ №49, п.5: перед rewarded
-    goal('rewarded_click', { place: 'hint' });
-    Platform.showRewarded(
-      function () { pendingHint = hint; },
-      function (wasRewarded, outcome) {
-        goalRewardedResult('hint', wasRewarded, outcome);
-        unlockRewardedGate();
-        hideAdLoadingOverlay();
-        Nonogram.setPaused(false);
-        Sound.resume();
-        if (pendingHint) {
-          Nonogram.applyHint(pendingHint);
-          pendingHint = null;
-          _hintsUsedThisLevel++;
-          if (!Nonogram.findHint()) {
-            document.getElementById('btn-hint').disabled = true;
-          }
-        }
+    runBonusAd('hint', { pauseBoard: true, hints: HINTS_PER_AD }, function () {
+      // 5 за просмотр: одна применяется сейчас, остальные — в баланс.
+      _bonusHints += HINTS_PER_AD - 1;
+      updateHintBadge();
+      updateCheckButton();
+      saveProgress();
+      showRetentionToast(I18N.t('adHintsGranted').replace('{n}', HINTS_PER_AD));
+      Nonogram.applyHint(hint);
+      _hintsUsedThisLevel++;
+      if (!Nonogram.findHint()) {
+        document.getElementById('btn-hint').disabled = true;
       }
-    );
+    });
   }
 
   /* ---- ТЗ №51: кнопка «Проверить» ---- */
@@ -2579,31 +2599,16 @@ document.addEventListener('DOMContentLoaded', function () {
     // 4. Иначе — тот же путь, что и подсказка за рекламу (переиспользуем
     // те же обёртки: showAdLoadingOverlay/lockRewardedGate/идемпотентность
     // через onReward->onClose, см. onHintClick выше).
-    var pendingCheck = false;
-    if (_currentLevel >= 0) flushBoardSave(_currentLevel);
-    Sound.suspend();
-    Nonogram.setPaused(true);
-    showAdLoadingOverlay();
-    lockRewardedGate();
-    if (Platform.gameplayStop) Platform.gameplayStop();
-    goal('rewarded_click', { place: 'check' });
-    Platform.showRewarded(
-      function () { pendingCheck = true; },
-      function (wasRewarded, outcome) {
-        goalRewardedResult('check', wasRewarded, outcome);
-        unlockRewardedGate();
-        hideAdLoadingOverlay();
-        Nonogram.setPaused(false);
-        Sound.resume();
-        if (pendingCheck) {
-          pendingCheck = false;
-          var fixedAd = Nonogram.revealErrors();
-          showRetentionToast(I18N.t('checkFixed').replace('{n}', fixedAd));
-          trackEvent('check_used', { mode: 'ad', fixed: fixedAd });
-          updateCheckButton();
-        }
-      }
-    );
+    runBonusAd('check', { pauseBoard: true, hints: HINTS_PER_AD }, function () {
+      // 5 за просмотр: одна уходит на эту проверку, остальные — в баланс.
+      _bonusHints += HINTS_PER_AD - 1;
+      updateHintBadge();
+      saveProgress();
+      var fixedAd = Nonogram.revealErrors();
+      showRetentionToast(I18N.t('checkFixed').replace('{n}', fixedAd));
+      trackEvent('check_used', { mode: 'ad', fixed: fixedAd });
+      updateCheckButton();
+    });
   }
 
   /* ---- ТЗ №51: мягкие тосты без кнопки ---- */

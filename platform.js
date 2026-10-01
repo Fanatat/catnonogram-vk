@@ -6,7 +6,7 @@
    Публичный интерфейс 1:1 повторяет боевой platform.js (Яндекс),
    промодерированный и не подлежащий изменению: init, ready, getLang,
    isAvailable, save, load, now, showInterstitial(onDone),
-   showRewarded(onReward, onClose). Это НЕ «канонiчный контракт v2» из
+   showBonusAd(onResult) (бонус «за рекламу» = interstitial, 2026-10-01). Это НЕ «канонiчный контракт v2» из
    Словохода (там gameReady/другие сигнатуры рекламы/нет now()) —
    имена и сигнатуры совпадают с main.js этой игры, чтобы не трогать
    общий для обеих сборок main.js.
@@ -89,13 +89,6 @@ if (typeof window !== 'undefined') {
 window.Platform = (function () {
   var STORAGE_KEY  = 'nonogram_save';
   var INIT_TIMEOUT = 2500; // мс — после этого уходим в dev-режим
-  // ТЗ №23 v2: молчащий мост (ни .then, ни .catch за showRewarded) оставлял
-  // игрока перед замороженным экраном — onHintClick ставит паузу ДО вызова
-  // и снимает её только в колбэке. Значение — эталон game3/color_sort/
-  // vk_platform.js REWARD_AD_TIMEOUT_MS (число не придумано, Р-Э5).
-  var REWARD_AD_TIMEOUT_MS = 40000;
-  var _rewardedInFlight = false; // защита от повторной отправки, см. showRewarded
-
   var available = false;
 
   function hasBridge() {
@@ -504,7 +497,7 @@ window.Platform = (function () {
   // Nonogram.setPaused(true) ДО вызова, снимает только в колбэке onDone.
   // Найдено при аудите пути загрузки (ТЗ №47), не на самом пути загрузки —
   // но риск идентичен, чинится тем же приёмом.
-  var INTERSTITIAL_TIMEOUT_MS = 15000; // короче REWARD_AD_TIMEOUT_MS — не обещание награды, можно решительнее
+  var INTERSTITIAL_TIMEOUT_MS = 15000;
 
   // Полноэкранная реклама. onDone(shown) зовём в любом исходе; shown — true,
   // только если площадка подтвердила показ (result:true) — для аналитики
@@ -520,23 +513,8 @@ window.Platform = (function () {
       .catch(function (e) { console.warn('[Platform] interstitial недоступен/не ответил:', e); done(false); });
   }
 
-  // Реклама за награду. onReward() — выдать награду. onClose(wasRewarded,
-  // outcome) — вернуть звук/состояние (зовём всегда после закрытия).
-  // outcome (ТЗ №57, rewarded_result): 'reward' — площадка подтвердила
-  // досмотр, 'closed' — ролик закрыт без награды (result:false), 'error' —
-  // ролика не было (нет моста, отказ, таймаут; награда при этом бесплатно).
-  // Фикс 7: если проверка показала, что rewarded недоступен (adblock) —
-  // ролик вообще не запускаем, награда выдаётся сразу («бесплатный режим»).
-  // ТЗ №12: «бесплатный режим» — это ЛЮБОЙ случай, когда мы не можем
-  // достоверно показать настоящий ролик, не только adblock. Bridge не
-  // инициализирован (!available) и сбой промиса показа (catch) — тот же
-  // класс: игрок нажал кнопку, обещавшую награду, и не виноват в том, что
-  // площадка не смогла её отработать. Единственная законная причина НЕ
-  // выдать — явный result:false внутри успешно РАЗРЕШИВШЕГОСЯ промиса
-  // (площадка утверждает: ролик показан, но не досмотрен/закрыт игроком).
-  // Гонка настоящего промиса моста против таймера — natural Promise-
-  // семантика settle-once сама даёт идемпотентность (эталон
-  // game3/color_sort/vk_platform.js withTimeout, тот же приём).
+  // Гонка настоящего промиса моста против таймера — settle-once семантика
+  // промиса сама даёт идемпотентность (эталон game3/color_sort/vk_platform.js).
   function withTimeout(promise, ms) {
     return new Promise(function (resolve, reject) {
       var timer = setTimeout(function () { reject(new Error('timeout')); }, ms);
@@ -547,119 +525,58 @@ window.Platform = (function () {
     });
   }
 
-  function showRewarded(onReward, onClose) {
-    // 2026-09-06: раньше здесь стоял ещё !rewardedAvailable — флаг ОДНОГО
-    // рывка VKWebAppCheckNativeAds при init() с таймаутом всего 1500мс,
-    // кэшированный на всю сессию. Живой баг-репорт с мобильного ВК: если
-    // ЭТОТ рывок промахнулся (мобильная сеть медленнее 1500мс, или сам
-    // CheckNativeAds на мобильном отвечает иначе, чем на десктопе) —
-    // rewardedAvailable=false ЗАСТЫВАЛО на весь сеанс, и КАЖДЫЙ клик после
-    // исчерпания бесплатного баланса тихо выдавал подсказку бесплатно, ни
-    // разу не пытаясь показать настоящий ролик — дыра в монетизации, не
-    // видимая на десктопе (там та же самая проверка случайно проходила).
-    // Тот же побочный эффект — checkRewardedAvailable() ещё и подменяла
-    // #btn-hint.textContent целиком, стирая значок/бейдж/подпись из
-    // index.html (main.js/style.css больше не в курсе этой мутации).
-    // Теперь КАЖДЫЙ клик после исчерпания бесплатного баланса — это ОДНА
-    // настоящая попытка показать ролик, с собственным честным таймаутом
-    // REWARD_AD_TIMEOUT_MS (40с, см. ниже) и тем же бесплатным фолбэком на
-    // конкретно ЭТОЙ попытке — тот же студийный стандарт «не наказываем
-    // игрока за то, что площадка не смогла отработать», но без риска
-    // залипания на «бесплатно навсегда» из-за одного неудачного рывка при
-    // загрузке страницы.
-    if (!available) {
-      if (window.debugLog) window.debugLog('showRewarded: Platform недоступен (dev-режим) -> бесплатно сразу');
-      if (onReward) onReward();
-      if (onClose) onClose(true, 'error');
+  // Бонус «за рекламу» (подсказка, «Проверить», открыть главу). Раунд 2
+  // (решение основателя 2026-10-01): РЕКЛАМА ЗА ВОЗНАГРАЖДЕНИЕ (rewarded) —
+  // правила ВК/Яндекса не дают показывать interstitial по кнопке игрока
+  // (ВК: interstitial «только в момент перехода между экранами»). Раунд 1
+  // (interstitial) отключён флагом BONUS_AD_FORMAT, путь сохранён.
+  // onResult(shown, reason) зовётся ровно один раз. shown === true ТОЛЬКО
+  // если площадка подтвердила показ/просмотр (result:true). Любой другой
+  // исход — нет моста/не VK-окружение, adblock, отказ, пустой результат,
+  // таймаут — shown === false и бонус НЕ выдаётся: прежнее «ошибка =
+  // бесплатно» (студийный стандарт п.190) отменено 2026-10-01 и не
+  // возвращается.
+  // reason: 'shown' | 'unavailable' | 'refused' (result:false) |
+  // 'error' (мост ответил ошибкой — в т.ч. adblock) | 'timeout'.
+  var BONUS_AD_FORMAT = 'reward';  // 'reward' | 'interstitial'
+  var BONUS_AD_TIMEOUT_MS = 40000; // ролик до 30 с + загрузка; молчащий мост бонус не даёт
+  var _bonusAdInFlight = false;
+  function showBonusAd(onResult) {
+    var finished = false;
+    function done(shown, reason) {
+      if (finished) return;
+      finished = true;
+      _bonusAdInFlight = false;
+      if (window.debugLog) window.debugLog('showBonusAd: ИТОГ shown=' + shown + ' (' + reason + ')', { big: true });
+      if (onResult) onResult(!!shown, reason);
+    }
+    if (!available || !hasBridge()) { done(false, 'unavailable'); return; }
+    if (_bonusAdInFlight) {
+      if (window.debugLog) window.debugLog('showBonusAd: запрос уже в полёте — повторный вызов проигнорирован');
       return;
     }
-    // Защита от повторной отправки (2026-09-07, живой скриншот основателя
-    // с реального Android + тот же паттерн у game3/color_sort той же
-    // ночью): без неё второй клик по кнопке подсказки, пока первый запрос
-    // ещё «в полёте», уходит вторым VKWebAppShowNativeAds(reward) — два
-    // одновременных запроса одного формата маршрутизируются мостом по
-    // одному и тому же общему каналу ответов, минимум неопределённое
-    // поведение. Основной барьер — логический гейт в main.js (_rewardedGateOpen,
-    // кнопка НЕ дизейблится, п.190); эта проверка — второй, независимый
-    // рубеж на случай иного пути вызова. Молча игнорируем, не трогаем
-    // колбэки — первый вызов доведёт СВОЙ onReward/onClose до конца сам.
-    if (_rewardedInFlight) {
-      if (window.debugLog) window.debugLog('showRewarded: запрос уже в полёте — повторный вызов проигнорирован');
-      return;
-    }
-    _rewardedInFlight = true;
+    _bonusAdInFlight = true;
     vkFlushNow(); // событие «перед рекламой» — не ждём дебаунса
-    // 2026-09-06: баг-репорт основателя — на мобильном ВК-клиенте
-    // VKWebAppShowNativeAds(reward) реально не показывает ролик (баннер
-    // при этом работает нормально — площадка в целом рекламу отдаёт,
-    // проблема именно с наполнением rewarded-формата). Известная слабость
-    // ВК-платформы: инвентарь rewarded-видео исторически заметно ýже
-    // баннерного/интерстишл (см. VKCOM/vk-bridge#243 — тот же класс
-    // проблемы у CheckNativeAds, который уже привёл к прошлому фиксу этой
-    // сессии). useWaterfall:true — задокументированный официальный
-    // параметр ИМЕННО для ad_format:'reward': разрешает площадке
-    // подставить interstitial, если настоящего rewarded-ролика нет в
-    // наличии, вместо немедленного отказа — увеличивает реальную долю
-    // показов, не отменяет и не заменяет предохранитель ниже (он остаётся
-    // на случай, если и подставить нечего).
-    if (window.debugLog) window.debugLog('showRewarded: -> AndroidBridge/мост VKWebAppShowNativeAds(reward, useWaterfall=true), жду до ' + REWARD_AD_TIMEOUT_MS + 'мс');
-    // Счётчик ожидания (2026-09-07, живой скриншот основателя: закрыл игру
-    // через 10-15с, не дождавшись итога — пустой лог читается как «зависло»
-    // задолго до настоящего таймаута). Раз в 10с, формат согласован с
-    // сессией game3/color_sort (тот же баг, тот же вечер) — одинаковые
-    // строки на скриншотах обеих игр читаются рядом без перевода в уме.
-    var _elapsedMs = 0;
-    var _waitTick = setInterval(function () {
-      _elapsedMs += 10000;
-      if (window.debugLog) {
-        window.debugLog('[rewarded] жду ответа моста: ' + (_elapsedMs / 1000) + 'с/' + (REWARD_AD_TIMEOUT_MS / 1000) + 'с');
-      }
-    }, 10000);
-    withTimeout(vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'reward', useWaterfall: true }), REWARD_AD_TIMEOUT_MS)
+    // useWaterfall:true — задокументированный параметр ИМЕННО для 'reward':
+    // если настоящего rewarded-ролика нет, площадка подставит interstitial
+    // вместо отказа (больше реальных показов). Подтверждение — тот же
+    // result:true; без показа result не true.
+    var params = BONUS_AD_FORMAT === 'reward'
+      ? { ad_format: 'reward', useWaterfall: true }
+      : { ad_format: 'interstitial' };
+    withTimeout(vkBridge.send('VKWebAppShowNativeAds', params), BONUS_AD_TIMEOUT_MS)
       .then(function (res) {
-        clearInterval(_waitTick);
-        _rewardedInFlight = false;
-        var rewarded = res.result === true;
-        if (window.debugLog) window.debugLog('showRewarded: мост ОТВЕТИЛ, result=' + res.result, { big: true });
-        if (rewarded && onReward) onReward();
+        var ok = !!res && res.result === true;
         // Выдача обязана пережить немедленное закрытие/перезагрузку сразу
-        // после ролика (ТЗ №12, доклад основателя: «выдача сохранена» была
-        // ложью — saveProgress() внутри onReward() лишь ставит запись в
-        // обычную 10с-очередь дебаунса адаптера; без форс-флаша здесь она
-        // терялась при быстром уходе со страницы).
-        if (rewarded) vkFlushNow();
-        if (onClose) onClose(rewarded, rewarded ? 'reward' : 'closed');
+        // после ролика (ТЗ №12) — saveProgress() внутри onResult лишь ставит
+        // запись в очередь дебаунса; флаш делает ВЫЗЫВАЮЩИЙ после выдачи.
+        done(ok, ok ? 'shown' : 'refused');
+        if (ok) vkFlushNow();
       })
       .catch(function (e) {
-        clearInterval(_waitTick);
-        _rewardedInFlight = false;
-        // Тот же .catch() ловит и штатный сбой моста, и таймаут-предохранитель
-        // (withTimeout реджектит по истечении REWARD_AD_TIMEOUT_MS) — оба
-        // исхода по студийному стандарту выдают награду бесплатно.
-        //
-        // 2026-09-06 (расследование): различаем ДВА разных исхода в самом
-        // тексте лога — раньше оба выглядели одинаково "недоступен/таймаут",
-        // хотя это РАЗНЫЕ ситуации на стороне площадки:
-        //   - e.message === 'timeout' (наш withTimeout) -> нативная сторона
-        //     ВООБЩЕ не ответила за 40с — ни успехом, ни error_type. Живая
-        //     проверка (tools/investigate_vk_android_bridge.js, реальный
-        //     vk-bridge.min.js через мок window.AndroidBridge) подтвердила:
-        //     это не наш баг тайминга — жест не протухает, вызов уходит
-        //     синхронно, <10мс после клика.
-        //   - иначе -> площадка ЯВНО ответила ошибкой (объект с error_type
-        //     от самого моста) — сюда попадает и обычный сетевой сбой.
-        // Если баг воспроизводится на реальном устройстве — эта строка в
-        // консоли прямо говорит, какой из двух случаев произошёл, не
-        // требует читать код.
-        var isSilentTimeout = e instanceof Error && e.message === 'timeout';
-        var verdict = isSilentTimeout
-          ? 'НЕ ОТВЕТИЛА за ' + REWARD_AD_TIMEOUT_MS + 'мс (ни успех, ни ошибка)'
-          : 'явно отказала: ' + (function () { try { return JSON.stringify(e); } catch (je) { return String(e); } })();
-        console.warn('[Platform] showRewarded (vk): площадка ' + verdict + ', выдаём бесплатно:', e);
-        if (window.debugLog) window.debugLog('showRewarded: ИТОГ — площадка ' + verdict + ' -> выдаём бесплатно', { big: true });
-        if (onReward) onReward();
-        vkFlushNow();
-        if (onClose) onClose(true, 'error');
+        var silent = e instanceof Error && e.message === 'timeout';
+        console.warn('[Platform] showBonusAd (vk): ' + (silent ? 'мост не ответил' : 'площадка отказала') + ' — бонус не выдан:', e);
+        done(false, silent ? 'timeout' : 'error');
       });
   }
 
@@ -816,7 +733,7 @@ window.Platform = (function () {
     now: now,
     showBannerAd: showBannerAd,
     showInterstitial: showInterstitial,
-    showRewarded: showRewarded,
+    showBonusAd: showBonusAd,
     canShareStory: canShareStory,
     shareStory: shareStory,
     getCatalog: getCatalog,
