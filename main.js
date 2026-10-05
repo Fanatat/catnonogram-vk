@@ -118,6 +118,7 @@ document.addEventListener('DOMContentLoaded', function () {
   var _muted           = false;
   var _boardStates     = {};  // { levelIndex: board[][] }
   var _saveTimer       = null;
+  var _recoveryReloadPending = false; // F01: облачный сейв наконец прочитан — перезагрузиться в меню
   var _currentLevel    = -1;
   var _dailyDone       = '';  // 'YYYY-M-D' локальная дата последнего зачёта daily
   var _streak          = 0;   // дней подряд
@@ -368,6 +369,18 @@ document.addEventListener('DOMContentLoaded', function () {
     // экранах (один показ на сессию, не по экрану). Только ВК —
     // Platform.showBannerAd не существует в яндекс-сборке (platform.js).
     if (Platform.showBannerAd) Platform.showBannerAd();
+
+    // Аудит 2026-10-05, F01: если сейв не прочитался, адаптер не пишет в
+    // облако и в фоне перечитывает его; когда чтение удалось и прогресс там
+    // есть, страница перезагружается — в меню (или при ближайшем возврате в
+    // меню), чтобы не обрывать игрока посреди картинки.
+    if (Platform.setRecoveryHandler) {
+      Platform.setRecoveryHandler(function () {
+        _recoveryReloadPending = true;
+        var menu = document.getElementById('menu');
+        if (menu && menu.classList.contains('is-active')) location.reload();
+      });
+    }
 
     Platform.load().then(function (data) {
       _aNewPlayer = (Platform.loadFailed && Platform.loadFailed()) ? -1
@@ -656,7 +669,7 @@ document.addEventListener('DOMContentLoaded', function () {
   // (после снятия паузы/звука); onDone(shown) — по желанию, после всего.
   var HINTS_PER_AD = 5;
 
-  function runBonusAd(place, opts, onShown, onDone) {
+  function runBonusAd(place, opts, onShown, onDone, onLate) {
     if (opts.pauseBoard) {
       if (_currentLevel >= 0) flushBoardSave(_currentLevel);
       Nonogram.setPaused(true);
@@ -688,7 +701,24 @@ document.addEventListener('DOMContentLoaded', function () {
         showRetentionToast(I18N.t('adNotShown'), 6000);
       }
       if (onDone) onDone(shown);
+    }, function () {
+      // Аудит 2026-10-05, F02: площадка подтвердила просмотр ПОСЛЕ
+      // таймаута (игрок уже увидел тост «не показалась»). Бонус зачитывается
+      // один раз, но не как действие над текущим полем: подсказки — в
+      // баланс, глава — открывается по ключу.
+      goal('rewarded_result', { place: place, result: 'reward', late: 1, hints: opts.hints || 0 });
+      window.debugLog('bonus ad: поздняя награда после таймаута (' + place + ') — зачтена');
+      if (onLate) onLate();
     });
+  }
+
+  // Поздняя награда за подсказку/«Проверить» — весь пакет в баланс.
+  function grantLateHints() {
+    _bonusHints += HINTS_PER_AD;
+    updateHintBadge();
+    updateCheckButton();
+    saveProgress();
+    showRetentionToast(I18N.t('adLateReward').replace('{n}', HINTS_PER_AD), 6000);
   }
 
   // Яндекс 4.5.1 (усиление 2026-09-06, прямая просьба основателя после
@@ -1255,6 +1285,7 @@ document.addEventListener('DOMContentLoaded', function () {
   /* ---- Меню ---- */
 
   function showMenu() {
+    if (_recoveryReloadPending) { location.reload(); return; }
     showScreen('menu');
     trackEvent('menu_shown');
     if (typeof Retention !== 'undefined') renderRetentionStreakLine();
@@ -1685,6 +1716,14 @@ document.addEventListener('DOMContentLoaded', function () {
       showChapters();
       showRetentionToast(I18N.t('chapterUnlockedToast').replace('{name}', I18N.t(ch.nameKey)));
       Sound.play('chapterUnlocked');
+    }, function () {
+      // Поздняя награда (F02): глава открывается по ключу, идемпотентно.
+      if (_chaptersUnlocked[ch.key]) return;
+      _chaptersUnlocked[ch.key] = true;
+      saveProgress();
+      trackEvent('chapter_unlock_ad', { chapter: ch.key, late: 1 });
+      showRetentionToast(I18N.t('chapterUnlockedToast').replace('{name}', I18N.t(ch.nameKey)), 6000);
+      if (document.getElementById('chapters').classList.contains('is-active')) showChapters();
     });
   }
 
@@ -2510,7 +2549,7 @@ document.addEventListener('DOMContentLoaded', function () {
       if (!Nonogram.findHint()) {
         document.getElementById('btn-hint').disabled = true;
       }
-    });
+    }, null, grantLateHints);
   }
 
   /* ---- ТЗ №51: кнопка «Проверить» ---- */
@@ -2608,7 +2647,7 @@ document.addEventListener('DOMContentLoaded', function () {
       showRetentionToast(I18N.t('checkFixed').replace('{n}', fixedAd));
       trackEvent('check_used', { mode: 'ad', fixed: fixedAd });
       updateCheckButton();
-    });
+    }, null, grantLateHints);
   }
 
   /* ---- ТЗ №51: мягкие тосты без кнопки ---- */

@@ -164,18 +164,64 @@ window.Platform = (function () {
   var _flushTimer    = null;
   var _writeLog      = [];
 
+  // Аудит 2026-10-05, F03: запись, на которую мост ответил ошибкой, раньше
+  // молча терялась (_pendingState обнулялся до ответа). Теперь:
+  //  - каждая отправка получает номер (_sendSeq); _ackedSeq — номер
+  //    последней подтверждённой. Неудачная отправка возвращается в очередь
+  //    только если за время запроса не появилось более свежее состояние и
+  //    ни одна более поздняя запись не подтверждена — старый повтор не
+  //    может затереть новый прогресс;
+  //  - повтор — с нарастающей паузой (VK_RETRY_BASE_MS … VK_RETRY_MAX_MS),
+  //    попытки считаются в _writeLog, мягкий тормоз лимита работает как
+  //    для обычных записей;
+  //  - пока запрос в полёте, обычный флаш ждёт его конца (порядок записей
+  //    на стороне ВК не гарантирован); при сворачивании страницы отправка
+  //    идёт сразу — позже может не быть шанса.
+  var VK_RETRY_BASE_MS = 2000;
+  var VK_RETRY_MAX_MS  = 60000;
+  var VK_WRITE_TIMEOUT_MS = 15000;
+  var _sendSeq = 0, _ackedSeq = 0, _writesInFlight = 0, _retryAttempt = 0;
+
+  // F01: пока облачный сейв не прочитан (ошибка/таймаут StorageGet), писать
+  // в тот же ключ нельзя — игра стартовала с пустым состоянием и затёрла бы
+  // прежний прогресс. Состояние копится в _pendingState и уйдёт только
+  // после успешного повторного чтения (см. vkRetryLoad ниже).
+  var _saveBlocked = false;
+
+  function vkScheduleRetry() {
+    if (_flushTimer) return;
+    var delay = Math.min(VK_RETRY_MAX_MS, VK_RETRY_BASE_MS * Math.pow(2, _retryAttempt));
+    _retryAttempt++;
+    _flushTimer = setTimeout(vkFlushPending, delay);
+  }
+
   function vkFlushPending() {
     _flushTimer = null;
-    if (_pendingState == null) return;
+    if (_pendingState == null || _saveBlocked) return;
+    if (_writesInFlight > 0 && !(typeof document !== 'undefined' && document.visibilityState === 'hidden')) {
+      return; // доведёт завершение текущего запроса (см. ниже)
+    }
     var toSend = _pendingState;
     _pendingState = null;
+    var seq = ++_sendSeq;
     _writeLog = vkPruneWriteLog(_writeLog, Date.now());
     _writeLog.push(Date.now());
-    vkBridge.send('VKWebAppStorageSet', {
+    _writesInFlight++;
+    // Таймаут 15 с: молчащий мост не должен навсегда занять «полёт» и
+    // остановить обычные записи (опоздавший успех безвреден — сейв целиком).
+    withTimeout(vkBridge.send('VKWebAppStorageSet', {
       key:   STORAGE_KEY,
       value: JSON.stringify(toSend),
-    }).catch(function (e) {
-      console.error('[Platform] StorageSet ошибка:', e);
+    }), VK_WRITE_TIMEOUT_MS).then(function () {
+      _writesInFlight--;
+      if (seq > _ackedSeq) _ackedSeq = seq;
+      _retryAttempt = 0;
+      if (_pendingState != null && !_flushTimer) vkFlushPending();
+    }, function (e) {
+      _writesInFlight--;
+      console.error('[Platform] StorageSet ошибка (повтор запланирован):', e);
+      if (_pendingState == null && seq > _ackedSeq) _pendingState = toSend;
+      if (_pendingState != null) vkScheduleRetry();
     });
   }
 
@@ -230,6 +276,43 @@ window.Platform = (function () {
   var _loadFailed = false;
   function loadFailed() { return _loadFailed; }
 
+  // F01: фоновое повторное чтение. Успех — запись разблокируется; если в
+  // облаке есть прогресс, его отдаём игре (setRecoveryHandler) — она
+  // перезагрузится в безопасный момент, а накопленное за время сбоя
+  // состояние сессии отбрасывается: прежний прогресс важнее.
+  var VK_LOAD_RETRY_BASE_MS = 5000;
+  var VK_LOAD_RETRY_MAX_MS  = 120000;
+  var _loadRetryAttempt = 0;
+  var _recoveryHandler = null;
+  function setRecoveryHandler(fn) { _recoveryHandler = fn; }
+
+  function vkScheduleLoadRetry() {
+    var delay = Math.min(VK_LOAD_RETRY_MAX_MS, VK_LOAD_RETRY_BASE_MS * Math.pow(2, _loadRetryAttempt));
+    _loadRetryAttempt++;
+    setTimeout(vkRetryLoad, delay);
+  }
+
+  function vkRetryLoad() {
+    withTimeout(vkBridge.send('VKWebAppStorageGet', { keys: [STORAGE_KEY] }), STORAGE_TIMEOUT_MS)
+      .then(function (res) {
+        var raw = res.keys && res.keys[0] && res.keys[0].value;
+        var data = raw ? JSON.parse(raw) : null;
+        if (data && typeof data === 'object' && Object.keys(data).length > 0) {
+          // Прогресс в облаке есть, игра о нём не знает — запись остаётся
+          // заблокированной, пока игра не перезагрузится и не прочтёт его.
+          if (_recoveryHandler) _recoveryHandler(data);
+          return;
+        }
+        _saveBlocked = false; // в облаке действительно пусто — терять нечего
+        _retryAttempt = 0;
+        if (_pendingState != null) vkFlushNow();
+      })
+      .catch(function (e) {
+        console.warn('[Platform] повторное чтение сейва не удалось:', e);
+        vkScheduleLoadRetry();
+      });
+  }
+
   function load() {
     if (!available) {
       try {
@@ -240,11 +323,27 @@ window.Platform = (function () {
     return withTimeout(vkBridge.send('VKWebAppStorageGet', { keys: [STORAGE_KEY] }), STORAGE_TIMEOUT_MS)
       .then(function (res) {
         var raw = res.keys && res.keys[0] && res.keys[0].value;
-        return raw ? JSON.parse(raw) : null;
+        if (!raw) return null;
+        try {
+          return JSON.parse(raw);
+        } catch (e) {
+          // Облако ответило, но значение не JSON (обрезано/испорчено):
+          // повтор не поможет. Кладём копию рядом, прежде чем игра
+          // перепишет ключ, — данные не пропадают безвозвратно.
+          console.error('[Platform] сейв в облаке не разбирается как JSON — копия в ' + STORAGE_KEY + '_corrupt:', e);
+          _loadFailed = true;
+          try {
+            vkBridge.send('VKWebAppStorageSet', { key: STORAGE_KEY + '_corrupt', value: String(raw) })
+              .catch(function () {});
+          } catch (e2) { /* копия — по возможности */ }
+          return null;
+        }
       })
       .catch(function (e) {
-        console.error('[Platform] StorageGet ошибка/таймаут (' + STORAGE_TIMEOUT_MS + 'мс):', e);
+        console.error('[Platform] StorageGet ошибка/таймаут (' + STORAGE_TIMEOUT_MS + 'мс) — запись сейва заблокирована до успешного чтения:', e);
         _loadFailed = true;
+        _saveBlocked = true;
+        vkScheduleLoadRetry();
         return null;
       });
   }
@@ -541,11 +640,21 @@ window.Platform = (function () {
   var BONUS_AD_FORMAT = 'reward';  // 'reward' | 'interstitial'
   var BONUS_AD_TIMEOUT_MS = 40000; // ролик до 30 с + загрузка; молчащий мост бонус не даёт
   var _bonusAdInFlight = false;
-  function showBonusAd(onResult) {
+  // Аудит 2026-10-05, F02: ответ SDK мог прийти ПОСЛЕ таймаута (медленная
+  // загрузка ролика) — result:true терялся, хотя игрок рекламу посмотрел.
+  // Таймер по-прежнему возвращает управление (done(false,'timeout')), но
+  // настоящий промис моста не отбрасывается: поздний result:true вызывает
+  // onLate() — ровно один раз на запрос. Что выдать за позднюю награду,
+  // решает вызывающий (main.js: баланс подсказок / открытие главы), а не
+  // действие над текущим полем — к уже ушедшей вперёд игре оно не липнет.
+  function showBonusAd(onResult, onLate) {
     var finished = false;
+    var lateDone = false;
+    var timer = null;
     function done(shown, reason) {
       if (finished) return;
       finished = true;
+      clearTimeout(timer);
       _bonusAdInFlight = false;
       if (window.debugLog) window.debugLog('showBonusAd: ИТОГ shown=' + shown + ' (' + reason + ')', { big: true });
       if (onResult) onResult(!!shown, reason);
@@ -564,20 +673,34 @@ window.Platform = (function () {
     var params = BONUS_AD_FORMAT === 'reward'
       ? { ad_format: 'reward', useWaterfall: true }
       : { ad_format: 'interstitial' };
-    withTimeout(vkBridge.send('VKWebAppShowNativeAds', params), BONUS_AD_TIMEOUT_MS)
-      .then(function (res) {
-        var ok = !!res && res.result === true;
-        // Выдача обязана пережить немедленное закрытие/перезагрузку сразу
-        // после ролика (ТЗ №12) — saveProgress() внутри onResult лишь ставит
-        // запись в очередь дебаунса; флаш делает ВЫЗЫВАЮЩИЙ после выдачи.
-        done(ok, ok ? 'shown' : 'refused');
-        if (ok) vkFlushNow();
-      })
-      .catch(function (e) {
-        var silent = e instanceof Error && e.message === 'timeout';
-        console.warn('[Platform] showBonusAd (vk): ' + (silent ? 'мост не ответил' : 'площадка отказала') + ' — бонус не выдан:', e);
-        done(false, silent ? 'timeout' : 'error');
-      });
+    timer = setTimeout(function () {
+      console.warn('[Platform] showBonusAd (vk): мост не ответил за ' + BONUS_AD_TIMEOUT_MS + 'мс — бонус не выдан (поздний result:true ещё принимается)');
+      done(false, 'timeout');
+    }, BONUS_AD_TIMEOUT_MS);
+    var sent;
+    try { sent = vkBridge.send('VKWebAppShowNativeAds', params); }
+    catch (e) { sent = Promise.reject(e); }
+    sent.then(function (res) {
+      var ok = !!res && res.result === true;
+      if (finished) {
+        if (ok && !lateDone) {
+          lateDone = true;
+          if (window.debugLog) window.debugLog('showBonusAd: ПОЗДНЯЯ награда после таймаута принята', { big: true });
+          if (onLate) onLate();
+          vkFlushNow();
+        }
+        return;
+      }
+      // Выдача обязана пережить немедленное закрытие/перезагрузку сразу
+      // после ролика (ТЗ №12) — saveProgress() внутри onResult лишь ставит
+      // запись в очередь дебаунса; флаш делает ВЫЗЫВАЮЩИЙ после выдачи.
+      done(ok, ok ? 'shown' : 'refused');
+      if (ok) vkFlushNow();
+    }, function (e) {
+      if (finished) return;
+      console.warn('[Platform] showBonusAd (vk): площадка отказала — бонус не выдан:', e);
+      done(false, 'error');
+    });
   }
 
   /* ---------- Шеринг картинки в историю (ТЗ №51) ----------
@@ -730,6 +853,7 @@ window.Platform = (function () {
     save: save,
     load: load,
     loadFailed: loadFailed,
+    setRecoveryHandler: setRecoveryHandler,
     now: now,
     showBannerAd: showBannerAd,
     showInterstitial: showInterstitial,
