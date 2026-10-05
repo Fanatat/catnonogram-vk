@@ -582,10 +582,17 @@ document.addEventListener('DOMContentLoaded', function () {
 
   var _retentionToastTimer = null;
 
-  function showRetentionToast(text, ms) {
+  // sub (v67) — мелкая вторая строка (код ошибки рекламы ВК), не обязательна.
+  function showRetentionToast(text, ms, sub) {
     var el = document.getElementById(RETENTION_CONFIG.domSlots.rewardToast);
     if (!el) return;
     el.textContent = text;
+    if (sub) {
+      var code = document.createElement('span');
+      code.className = 'toast-code';
+      code.textContent = sub;
+      el.appendChild(code);
+    }
     el.hidden = false;
     // requestAnimationFrame — чтобы .hidden->false и добавление класса не
     // схлопнулись в один кадр (иначе CSS-transition не сыграет).
@@ -681,12 +688,14 @@ document.addEventListener('DOMContentLoaded', function () {
     lockRewardedGate();
     if (Platform.gameplayStop) Platform.gameplayStop(); // ТЗ №49, п.5: перед полноэкранной рекламой
     goal('rewarded_click', { place: place });
-    Platform.showBonusAd(function (shown, reason) {
+    Platform.showBonusAd(function (shown, reason, diag) {
       // Имена целей Метрики прежние (rewarded_*) — ряд не рвём; result:
       // reward = показано и бонус выдан, closed = площадка отказала
       // (adblock/пауза/нет объявления), error = нет моста/сбой/таймаут.
+      // err (v67, только ВК) — что именно ответил мост: 'error:client_error:20',
+      // 'timeout', 'no_result' — без текста причины и без данных игрока.
       goalRewardedResult(place, shown, shown ? 'reward' : (reason === 'refused' ? 'closed' : 'error'),
-        shown && opts.hints ? opts.hints : 0);
+        shown && opts.hints ? opts.hints : 0, diag && diag.key);
       unlockRewardedGate();
       hideAdLoadingOverlay();
       if (opts.pauseBoard) Nonogram.setPaused(false);
@@ -697,8 +706,11 @@ document.addEventListener('DOMContentLoaded', function () {
         // показами площадки сохранены как были (ТЗ 2026-10-01, п.7).
         onShown();
       } else {
-        window.debugLog('bonus ad: не показана (' + reason + ') — бонус не выдан');
-        showRetentionToast(I18N.t('adNotShown'), 6000);
+        window.debugLog('bonus ad: не показана (' + reason + ') — бонус не выдан' + (diag ? ' — ' + diag.text : ''));
+        // v67: в приложении ВК (vk_platform=mobile_*) блокировщика не бывает —
+        // совет «отключите блокировщик» там вводил в заблуждение (жалоба
+        // основателя 05.10). Под текстом — строка кода: что ответил ВК.
+        showRetentionToast(I18N.t(diag && diag.app ? 'adFailApp' : 'adNotShown'), 6000, diag && diag.text);
       }
       if (onDone) onDone(shown);
     }, function () {
@@ -864,11 +876,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
   // outcome — второй аргумент onClose адаптера ('reward' | 'closed' | 'error').
   // hints — сколько подсказок выдано за этот просмотр (только hint/check, 0 — не добавляется).
-  function goalRewardedResult(place, wasRewarded, outcome, hints) {
+  // err — ключ неудачи от адаптера ВК (v67), не добавляется, если пуст.
+  function goalRewardedResult(place, wasRewarded, outcome, hints, err) {
     var result = (outcome === 'reward' || outcome === 'closed' || outcome === 'error')
       ? outcome : (wasRewarded ? 'reward' : 'closed');
     var params = { place: place, result: result };
     if (hints > 0) params.hints = hints;
+    if (err) params.err = err;
     goal('rewarded_result', params);
   }
 

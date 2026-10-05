@@ -119,6 +119,7 @@ window.Platform = (function () {
         }
         available = true;
         console.log('[Platform] VK Bridge init OK.');
+        fetchClientVersion();
         return true;
       })
       .catch(function (err) {
@@ -607,9 +608,73 @@ window.Platform = (function () {
 
     if (!available) { done(false); return; }
     vkFlushNow(); // событие «перед рекламой» — не ждём дебаунса
-    withTimeout(vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'interstitial' }), INTERSTITIAL_TIMEOUT_MS)
+    var sent = vkBridge.send('VKWebAppShowNativeAds', { ad_format: 'interstitial' });
+    // v67: промис моста может остаться без ответа и после нашего таймаута
+    // (vk-bridge#615) — помечаем, чтобы строка кода неудачного бонуса это
+    // показала («межстр. висит»).
+    _interPending++;
+    var unpend = function () { _interPending--; };
+    Promise.resolve(sent).then(unpend, unpend);
+    withTimeout(sent, INTERSTITIAL_TIMEOUT_MS)
       .then(function (res) { done(!!res && res.result === true); })
       .catch(function (e) { console.warn('[Platform] interstitial недоступен/не ответил:', e); done(false); });
+  }
+  var _interPending = 0;
+
+  /* ---------- Диагностика неудачного бонуса (v67) ----------
+     Жалоба основателя 05.10: в мобильном приложении ВК реклама за
+     подсказку «грузится, потом — отключите блокировщик», хотя блокировщика
+     нет. Игроку и в Метрику уходило только слово error — настоящий ответ
+     моста (error_type / error_code / error_reason) видела лишь консоль, а
+     на телефоне её не открыть. Теперь неудачный показ несёт diag: что
+     именно ответил мост, через сколько, какая версия приложения ВК.
+     main.js выводит короткую строку кода в уведомлении и шлёт ключ в
+     rewarded_result.err. Тот же формат — в game1 (b56) и game3. */
+  var _clientVer = ''; // 'android 8.12' — VKWebAppGetClientVersion, фоном после init
+  function fetchClientVersion() {
+    var p;
+    try { p = vkBridge.send('VKWebAppGetClientVersion'); } catch (e) { return; }
+    Promise.resolve(p).then(function (r) {
+      if (r && (r.platform || r.version)) _clientVer = String(r.platform || '?') + ' ' + String(r.version || '?');
+    }, function () {});
+  }
+  function launchPlatform() {
+    try { return (new URLSearchParams(location.search)).get('vk_platform') || ''; } catch (e) { return ''; }
+  }
+  // Отказ моста ВК: { error_type, error_data: { error_code, error_reason } };
+  // error_reason бывает строкой или объектом { error_msg }.
+  function bridgeErr(e) {
+    var type = '', code = '', reason = '';
+    if (e && typeof e === 'object') {
+      if (e instanceof Error) reason = e.message;
+      type = e.error_type ? String(e.error_type) : '';
+      var d = (e.error_data && typeof e.error_data === 'object') ? e.error_data : e;
+      if (d.error_code != null) code = String(d.error_code);
+      var r = d.error_reason != null ? d.error_reason : (d.error_description || d.error_msg || '');
+      if (r && typeof r === 'object') r = r.error_msg || r.error_description || JSON.stringify(r);
+      if (r) reason = String(r);
+    } else if (e != null) {
+      reason = String(e);
+    }
+    reason = reason.replace(/\s+/g, ' ').trim().slice(0, 48);
+    return { type: type, code: code, reason: reason, short: (type ? ':' + type : '') + (code ? ':' + code : '') };
+  }
+  // reason — исход showBonusAd ('error' | 'timeout' | 'refused' | 'unavailable').
+  function adDiag(reason, startedAt, err) {
+    var sec = startedAt ? Math.round((Date.now() - startedAt) / 100) / 10 : 0;
+    var be = reason === 'error' ? bridgeErr(err) : { type: '', code: '', reason: '', short: '' };
+    // key — для Метрики: короткий и стабильный, как в game1
+    // ('error:client_error:1', 'timeout', 'no_result', 'unavailable').
+    var key = reason === 'error' ? 'error' + be.short : (reason === 'refused' ? 'no_result' : reason);
+    var what = reason === 'error'
+      ? ['ВК', be.type, be.code, be.reason ? '«' + be.reason + '»' : ''].filter(Boolean).join(' ')
+      : (reason === 'timeout' ? 'ВК молчит' : (reason === 'refused' ? 'ВК: result ≠ true' : 'нет моста ВК'));
+    var plat = launchPlatform();
+    var text = [what, sec + ' с', _interPending > 0 ? 'межстр. висит' : '', _clientVer || plat]
+      .filter(Boolean).join(' · ');
+    // app — нативное приложение ВК (не браузер): блокировщика там не бывает
+    var app = /^(mobile_(android|iphone|ipad)|android_|iphone_|ipad_)/.test(plat);
+    return { res: reason, type: be.type, code: be.code, reason: be.reason, sec: sec, cv: _clientVer, app: app, key: key, text: text };
   }
 
   // Гонка настоящего промиса моста против таймера — settle-once семантика
@@ -637,6 +702,7 @@ window.Platform = (function () {
   // возвращается.
   // reason: 'shown' | 'unavailable' | 'refused' (result:false) |
   // 'error' (мост ответил ошибкой — в т.ч. adblock) | 'timeout'.
+  // Третий аргумент — diag (v67, см. adDiag) при неудаче, null при показе.
   var BONUS_AD_FORMAT = 'reward';  // 'reward' | 'interstitial'
   var BONUS_AD_TIMEOUT_MS = 40000; // ролик до 30 с + загрузка; молчащий мост бонус не даёт
   var _bonusAdInFlight = false;
@@ -651,13 +717,20 @@ window.Platform = (function () {
     var finished = false;
     var lateDone = false;
     var timer = null;
-    function done(shown, reason) {
+    var startedAt = 0;
+    // v67: третий аргумент onResult — diag (adDiag выше) при любом неудачном
+    // исходе; при shown === true — null.
+    function done(shown, reason, err) {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
       _bonusAdInFlight = false;
-      if (window.debugLog) window.debugLog('showBonusAd: ИТОГ shown=' + shown + ' (' + reason + ')', { big: true });
-      if (onResult) onResult(!!shown, reason);
+      var diag = shown ? null : adDiag(reason, startedAt, err);
+      if (window.debugLog) {
+        window.debugLog('showBonusAd: ИТОГ shown=' + shown + ' (' + reason + ')' +
+          (diag ? ' — ' + diag.text : ''), { big: true });
+      }
+      if (onResult) onResult(!!shown, reason, diag);
     }
     if (!available || !hasBridge()) { done(false, 'unavailable'); return; }
     if (_bonusAdInFlight) {
@@ -665,14 +738,12 @@ window.Platform = (function () {
       return;
     }
     _bonusAdInFlight = true;
+    startedAt = Date.now();
     vkFlushNow(); // событие «перед рекламой» — не ждём дебаунса
-    // useWaterfall:true — задокументированный параметр ИМЕННО для 'reward':
-    // если настоящего rewarded-ролика нет, площадка подставит interstitial
-    // вместо отказа (больше реальных показов). Подтверждение — тот же
-    // result:true; без показа result не true.
-    var params = BONUS_AD_FORMAT === 'reward'
-      ? { ad_format: 'reward', useWaterfall: true }
-      : { ad_format: 'interstitial' };
+    // v67: только ad_format. Прежний useWaterfall:true мост не читал вовсе —
+    // параметр у VKWebAppShowNativeAds называется use_waterfall (snake_case)
+    // и по умолчанию и так true. Минимальный запрос — как в документации.
+    var params = { ad_format: BONUS_AD_FORMAT };
     timer = setTimeout(function () {
       console.warn('[Platform] showBonusAd (vk): мост не ответил за ' + BONUS_AD_TIMEOUT_MS + 'мс — бонус не выдан (поздний result:true ещё принимается)');
       done(false, 'timeout');
@@ -699,7 +770,7 @@ window.Platform = (function () {
     }, function (e) {
       if (finished) return;
       console.warn('[Platform] showBonusAd (vk): площадка отказала — бонус не выдан:', e);
-      done(false, 'error');
+      done(false, 'error', e);
     });
   }
 
